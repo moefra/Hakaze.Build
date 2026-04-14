@@ -1,0 +1,78 @@
+<Project>
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>true</ImplicitUsings>
+        <LangVersion>Latest</LangVersion>
+
+        <PackageProjectUrl>https://github.com/moegodot/wakaze</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/moegodot/wakaze</RepositoryUrl>
+
+        <PublishRepositoryUrl>true</PublishRepositoryUrl>
+        <EmbedUntrackedSources>true</EmbedUntrackedSources>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+        <Deterministic>true</Deterministic>
+        <ContinuousIntegrationBuild Condition="'$(CI)' == 'true' or '$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+
+        <Authors>MoeGodot(me@kawayi.moe)</Authors>
+        <Copyright>Copyright ©2026 MoeGodot(me@kawayi.moe). All Rights Reserved.</Copyright>
+        <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+        <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
+
+        <PackageIcon>icon.png</PackageIcon>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+
+        <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+
+        <MinVerTagPrefix>v</MinVerTagPrefix>
+        <MinVerMinimumMajorMinor>0.1</MinVerMinimumMajorMinor>
+        <MinVerDefaultPreReleaseIdentifiers>snapshot.0</MinVerDefaultPreReleaseIdentifiers>
+
+        <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+        <RestoreLockedMode>true</RestoreLockedMode>
+        <WarningLevel>4</WarningLevel>
+        <WakazeDisabledAnas>KWA0005;KWA0006;KWA0007;KWA0008;KWA0009;KWA0010</WakazeDisabledAnas>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="'$(MSBuildProjectName.EndsWith(`.Tests`))' != 'true'">
+        <IsPackable>true</IsPackable>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <OutputType Condition="'$(MSBuildProjectName.EndsWith(`.Cli`))' != 'true'">Library</OutputType>
+        <OutputType Condition="'$(MSBuildProjectName.EndsWith(`.Cli`))' == 'true'">Exe</OutputType>
+    </PropertyGroup>
+
+    <ItemGroup Condition="'$(MSBuildProjectName.EndsWith(`.Tests`))' != 'true' And '$(MSBuildProjectName.EndsWith(`.Analyzer`))' != 'true' And '$(MSBuildProjectName.EndsWith(`.Generator`))' != 'true'">
+        <ProjectReference Include="$(MSBuildThisFileDirectory)\src\managed\Kawayi.Wakaze.Analyzer\Kawayi.Wakaze.Analyzer.csproj"
+                          OutputItemType="Analyzer" ReferenceOutputAssembly="false"/>
+        <ProjectReference Include="$(MSBuildThisFileDirectory)\src\managed\Kawayi.Wakaze.Generator\Kawayi.Wakaze.Generator.csproj"
+                          OutputItemType="Analyzer" ReferenceOutputAssembly="false"/>
+    </ItemGroup>
+
+    <PropertyGroup Condition="'$(MSBuildProjectName.EndsWith(`.Tests`))' == 'true'">
+        <IsPackable>false</IsPackable>
+        <GenerateDocumentationFile>false</GenerateDocumentationFile>
+        <OutputType>Exe</OutputType>
+        <NoWarn>$(NoWarn);CS1591</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <CompilerVisibleProperty Include="WakazeDisabledAnas"/>
+
+        <AdditionalFiles Include="$(MSBuildThisFileDirectory)/BannedSymbols.txt" Pack="false"/>
+        <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+        </PackageReference>
+        
+        <None Include="$(MSBuildThisFileDirectory)/images/icon.png" Pack="true" PackagePath="\"/>
+        <None Include="$(MSBuildThisFileDirectory)/README.md" Pack="true" PackagePath="\"/>
+
+        <PackageReference Include="MinVer">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+        </PackageReference>
+
+        <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All"/>
+    </ItemGroup>
+</Project>

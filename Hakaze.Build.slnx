@@ -7,9 +7,12 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Hakaze.Build.Core.Tests/Hakaze.Build.Core.Tests.csproj" />
+      <Project Path="tests/Hakaze.Build.Generator.Tests/Hakaze.Build.Generator.Tests.csproj" />
   </Folder>
   <Project Path="src/managed/Hakaze.Build.Abstractions/Hakaze.Build.Abstractions.csproj" />
   <Project Path="src/managed/Hakaze.Build.Cli/Hakaze.Build.Cli.csproj" />
   <Project Path="src/managed/Hakaze.Build.Core/Hakaze.Build.Core.csproj" />
+  <Project Path="samples/Hakaze.Build.Generator.Sample/Hakaze.Build.Generator.Sample.csproj" />
+  <Project Path="src/managed/Hakaze.Build.Generator/Hakaze.Build.Generator.csproj" />
   <Project Path="src/managed/Hakaze.Build.Utility/Hakaze.Build.Utility.csproj" />
 </Solution>

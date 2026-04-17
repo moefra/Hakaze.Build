@@ -1,3 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
-    
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+    <PackageReference Include="TUnit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\managed\Hakaze.Build.Abstractions\Hakaze.Build.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\managed\Hakaze.Build.Core\Hakaze.Build.Core.csproj" />
+    <ProjectReference Include="..\..\src\managed\Hakaze.Build.Generator\Hakaze.Build.Generator.csproj" />
+  </ItemGroup>
+
 </Project>

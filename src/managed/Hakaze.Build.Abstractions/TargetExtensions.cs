@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Hakaze.Build.Abstractions.Exceptions;
 
 namespace Hakaze.Build.Abstractions;
@@ -6,13 +7,16 @@ public static class TargetExtensions
 {
     extension<T>(ITarget target)
     {
-        public async Task<T> ExpectAsync(CancellationToken cancellationToken = default)
+        public async Task<T> ExpectAsync(
+            IEvaluatedBuilding building,
+            ImmutableDictionary<TargetId, object?> collectedExecutionResults,
+            CancellationToken cancellationToken = default)
         {
-            return (await target.ExecuteAsync(cancellationToken)) switch
+            return (await target.ExecuteAsync(building, collectedExecutionResults, cancellationToken)) switch
             {
                 SuccessfulExecutionWithResult<T> result => result.ExecutionResult,
                 CachedExecution<T> cached => cached.CachedResult,
-                _                                  => throw new NotImplementedException()
+                _ => throw new NotImplementedException()
             };
         }
     }

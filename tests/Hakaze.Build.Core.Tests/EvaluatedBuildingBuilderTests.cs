@@ -98,7 +98,10 @@ public class EvaluatedBuildingBuilderTests
 
         public ImmutableArray<TargetId> RequiredPreparation { get; } = [];
 
-        public Task<ExecutionResult> ExecuteAsync(CancellationToken cancellationToken = default)
+        public Task<ExecutionResult> ExecuteAsync(
+            IEvaluatedBuilding building,
+            ImmutableDictionary<TargetId, object?> collectedExecutionResults,
+            CancellationToken cancellationToken = default)
         {
             return Task.FromResult<ExecutionResult>(new SuccessfulExecution("ok"));
         }

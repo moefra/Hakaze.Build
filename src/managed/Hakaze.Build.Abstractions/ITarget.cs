@@ -8,5 +8,8 @@ public interface ITarget
 
     ImmutableArray<TargetId> RequiredPreparation { get; }
 
-    Task<ExecutionResult> ExecuteAsync(CancellationToken cancellationToken = default);
+    Task<ExecutionResult> ExecuteAsync(
+        IEvaluatedBuilding building,
+        ImmutableDictionary<TargetId, object?> collectedExecutionResults,
+        CancellationToken cancellationToken = default);
 }

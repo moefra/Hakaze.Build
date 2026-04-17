@@ -178,6 +178,9 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
         ImmutableArray<Diagnostic>.Builder diagnostics)
     {
         var builder = new TargetMethodBuilder(methodSymbol.Name, methodSymbol.Name, methodSymbol.Locations[0]);
+        var hasEvaluatedBuildingParameter = false;
+        var hasCollectedExecutionResultsParameter = false;
+        var hasCancellationTokenParameter = false;
 
         if (!methodSymbol.IsStatic)
         {
@@ -204,34 +207,69 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
 
             if (IsType(parameter.Type, "Hakaze.Build.Abstractions", "IBuilding"))
             {
-                if (index != 0)
+                diagnostics.Add(Diagnostic.Create(
+                    TargetExportDiagnostics.BuildingParameterIsNotSupported,
+                    location,
+                    methodSymbol.Name));
+                builder.MarkInvalid();
+                continue;
+            }
+
+            if (IsType(parameter.Type, "Hakaze.Build.Abstractions", "IEvaluatedBuilding"))
+            {
+                if (hasEvaluatedBuildingParameter)
                 {
                     diagnostics.Add(Diagnostic.Create(
-                        TargetExportDiagnostics.BuildingParameterMustBeFirst,
+                        TargetExportDiagnostics.DuplicateEvaluatedBuildingParameter,
                         location,
                         methodSymbol.Name));
                     builder.MarkInvalid();
+                    continue;
                 }
 
+                hasEvaluatedBuildingParameter = true;
                 builder.Parameters.Add(new TargetParameterModel(
                     parameter.Name,
                     parameter.Type.ToDisplayString(FullyQualifiedTypeFormat),
-                    TargetParameterKind.Building,
+                    TargetParameterKind.EvaluatedBuilding,
+                    null));
+                continue;
+            }
+
+            if (IsCollectedExecutionResultsType(parameter.Type))
+            {
+                if (hasCollectedExecutionResultsParameter)
+                {
+                    diagnostics.Add(Diagnostic.Create(
+                        TargetExportDiagnostics.DuplicateCollectedExecutionResultsParameter,
+                        location,
+                        methodSymbol.Name));
+                    builder.MarkInvalid();
+                    continue;
+                }
+
+                hasCollectedExecutionResultsParameter = true;
+                builder.Parameters.Add(new TargetParameterModel(
+                    parameter.Name,
+                    parameter.Type.ToDisplayString(FullyQualifiedTypeFormat),
+                    TargetParameterKind.CollectedExecutionResults,
                     null));
                 continue;
             }
 
             if (IsType(parameter.Type, "System.Threading", "CancellationToken"))
             {
-                if (index != methodSymbol.Parameters.Length - 1)
+                if (hasCancellationTokenParameter)
                 {
                     diagnostics.Add(Diagnostic.Create(
-                        TargetExportDiagnostics.CancellationTokenParameterMustBeLast,
+                        TargetExportDiagnostics.DuplicateCancellationTokenParameter,
                         location,
                         methodSymbol.Name));
                     builder.MarkInvalid();
+                    continue;
                 }
 
+                hasCancellationTokenParameter = true;
                 builder.Parameters.Add(new TargetParameterModel(
                     parameter.Name,
                     parameter.Type.ToDisplayString(FullyQualifiedTypeFormat),
@@ -326,6 +364,16 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             sourceBuilder.AppendLine();
         }
 
+        foreach (var method in model.Methods)
+        {
+            sourceBuilder.Append("    public delegate global::System.Threading.Tasks.Task<global::Hakaze.Build.Abstractions.ExecutionResult> ")
+                .Append(method.InvokerDelegateName)
+                .Append('(');
+            AppendParameterSignature(sourceBuilder, method.Parameters);
+            sourceBuilder.AppendLine(");");
+            sourceBuilder.AppendLine();
+        }
+
         sourceBuilder.AppendLine("    private static partial string GetTargetSourceId(global::Hakaze.Build.Abstractions.IBuilding building, global::System.Threading.CancellationToken cancellationToken);");
         sourceBuilder.AppendLine();
         sourceBuilder.AppendLine("    private static bool TryGetRetrievedValue<T>(");
@@ -367,6 +415,124 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
         sourceBuilder.AppendLine("        return false;");
         sourceBuilder.AppendLine("    }");
         sourceBuilder.AppendLine();
+        sourceBuilder.AppendLine("    private static global::System.Collections.Immutable.ImmutableDictionary<global::Hakaze.Build.Abstractions.TargetId, object?> PublishExecutionResult(");
+        sourceBuilder.AppendLine("        global::Hakaze.Build.Abstractions.TargetId targetId,");
+        sourceBuilder.AppendLine("        global::Hakaze.Build.Abstractions.ExecutionResult result,");
+        sourceBuilder.AppendLine("        global::System.Collections.Immutable.ImmutableDictionary<global::Hakaze.Build.Abstractions.TargetId, object?> dependencyResults)");
+        sourceBuilder.AppendLine("    {");
+        sourceBuilder.AppendLine("        var builder = dependencyResults.ToBuilder();");
+        sourceBuilder.AppendLine();
+        sourceBuilder.AppendLine("        if (TryExtractExecutionResultValue(result, out var value))");
+        sourceBuilder.AppendLine("        {");
+        sourceBuilder.AppendLine("            builder[targetId] = value;");
+        sourceBuilder.AppendLine("        }");
+        sourceBuilder.AppendLine();
+        sourceBuilder.AppendLine("        return builder.ToImmutable();");
+        sourceBuilder.AppendLine("    }");
+        sourceBuilder.AppendLine();
+        sourceBuilder.AppendLine("    private static bool TryExtractExecutionResultValue(");
+        sourceBuilder.AppendLine("        global::Hakaze.Build.Abstractions.ExecutionResult result,");
+        sourceBuilder.AppendLine("        out object? value)");
+        sourceBuilder.AppendLine("    {");
+        sourceBuilder.AppendLine("        var resultType = result.GetType();");
+        sourceBuilder.AppendLine();
+        sourceBuilder.AppendLine("        if (resultType.IsGenericType &&");
+        sourceBuilder.AppendLine("            resultType.GetGenericTypeDefinition() == typeof(global::Hakaze.Build.Abstractions.SuccessfulExecutionWithResult<>))");
+        sourceBuilder.AppendLine("        {");
+        sourceBuilder.AppendLine("            value = resultType");
+        sourceBuilder.AppendLine("                .GetProperty(nameof(global::Hakaze.Build.Abstractions.SuccessfulExecutionWithResult<object>.ExecutionResult))!");
+        sourceBuilder.AppendLine("                .GetValue(result);");
+        sourceBuilder.AppendLine("            return true;");
+        sourceBuilder.AppendLine("        }");
+        sourceBuilder.AppendLine();
+        sourceBuilder.AppendLine("        if (resultType.IsGenericType &&");
+        sourceBuilder.AppendLine("            resultType.GetGenericTypeDefinition() == typeof(global::Hakaze.Build.Abstractions.CachedExecution<>))");
+        sourceBuilder.AppendLine("        {");
+        sourceBuilder.AppendLine("            value = resultType");
+        sourceBuilder.AppendLine("                .GetProperty(nameof(global::Hakaze.Build.Abstractions.CachedExecution<object>.CachedResult))!");
+        sourceBuilder.AppendLine("                .GetValue(result);");
+        sourceBuilder.AppendLine("            return true;");
+        sourceBuilder.AppendLine("        }");
+        sourceBuilder.AppendLine();
+        sourceBuilder.AppendLine("        if (result is global::Hakaze.Build.Abstractions.SkippedExecution or global::Hakaze.Build.Abstractions.SuccessfulExecution)");
+        sourceBuilder.AppendLine("        {");
+        sourceBuilder.AppendLine("            value = null;");
+        sourceBuilder.AppendLine("            return true;");
+        sourceBuilder.AppendLine("        }");
+        sourceBuilder.AppendLine();
+        sourceBuilder.AppendLine("        value = null;");
+        sourceBuilder.AppendLine("        return false;");
+        sourceBuilder.AppendLine("    }");
+        sourceBuilder.AppendLine();
+        sourceBuilder.AppendLine("    private static async global::System.Threading.Tasks.Task<global::Hakaze.Build.Abstractions.ExecutionResult> ExecuteGeneratedTargetAsync(");
+        sourceBuilder.AppendLine("        global::Hakaze.Build.Abstractions.IEvaluatedBuilding building,");
+        sourceBuilder.AppendLine("        global::Hakaze.Build.Abstractions.TargetId rootId,");
+        sourceBuilder.AppendLine("        global::System.Threading.CancellationToken cancellationToken,");
+        sourceBuilder.AppendLine("        global::System.Func<global::Hakaze.Build.Abstractions.TargetId, global::System.Collections.Immutable.ImmutableDictionary<global::Hakaze.Build.Abstractions.TargetId, object?>, global::System.Threading.CancellationToken, global::System.Threading.Tasks.Task<global::Hakaze.Build.Abstractions.ExecutionResult>> rootExecutor)");
+        sourceBuilder.AppendLine("    {");
+        sourceBuilder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(building);");
+        sourceBuilder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(rootExecutor);");
+        sourceBuilder.AppendLine();
+        sourceBuilder.AppendLine("        var executionResults = new global::System.Collections.Generic.Dictionary<global::Hakaze.Build.Abstractions.TargetId, global::Hakaze.Build.Abstractions.ExecutionResult>();");
+        sourceBuilder.AppendLine("        var publishedResults = new global::System.Collections.Generic.Dictionary<global::Hakaze.Build.Abstractions.TargetId, global::System.Collections.Immutable.ImmutableDictionary<global::Hakaze.Build.Abstractions.TargetId, object?>>();");
+        sourceBuilder.AppendLine("        return await ExecuteCore(rootId, new global::System.Collections.Generic.HashSet<global::Hakaze.Build.Abstractions.TargetId>()).ConfigureAwait(false);");
+        sourceBuilder.AppendLine();
+        sourceBuilder.AppendLine("        async global::System.Threading.Tasks.Task<global::Hakaze.Build.Abstractions.ExecutionResult> ExecuteCore(");
+        sourceBuilder.AppendLine("            global::Hakaze.Build.Abstractions.TargetId currentId,");
+        sourceBuilder.AppendLine("            global::System.Collections.Generic.HashSet<global::Hakaze.Build.Abstractions.TargetId> stack)");
+        sourceBuilder.AppendLine("        {");
+        sourceBuilder.AppendLine("            if (executionResults.TryGetValue(currentId, out var cached))");
+        sourceBuilder.AppendLine("            {");
+        sourceBuilder.AppendLine("                return cached;");
+        sourceBuilder.AppendLine("            }");
+        sourceBuilder.AppendLine();
+        sourceBuilder.AppendLine("            if (!building.Targets.TryGetValue(currentId, out var target))");
+        sourceBuilder.AppendLine("            {");
+        sourceBuilder.AppendLine("                throw new global::System.InvalidOperationException($\"Target '{currentId}' was not found.\");");
+        sourceBuilder.AppendLine("            }");
+        sourceBuilder.AppendLine();
+        sourceBuilder.AppendLine("            if (!stack.Add(currentId))");
+        sourceBuilder.AppendLine("            {");
+        sourceBuilder.AppendLine("                throw new global::System.InvalidOperationException($\"Cyclic target dependency detected for '{currentId}'.\");");
+        sourceBuilder.AppendLine("            }");
+        sourceBuilder.AppendLine();
+        sourceBuilder.AppendLine("            try");
+        sourceBuilder.AppendLine("            {");
+        sourceBuilder.AppendLine("                var collectedExecutionResults = global::System.Collections.Immutable.ImmutableDictionary.CreateBuilder<global::Hakaze.Build.Abstractions.TargetId, object?>();");
+        sourceBuilder.AppendLine();
+        sourceBuilder.AppendLine("                foreach (var dependencyId in target.RequiredPreparation)");
+        sourceBuilder.AppendLine("                {");
+        sourceBuilder.AppendLine("                    var dependencyResult = await ExecuteCore(dependencyId, stack).ConfigureAwait(false);");
+        sourceBuilder.AppendLine("                    if (dependencyResult is global::Hakaze.Build.Abstractions.FailedExecution)");
+        sourceBuilder.AppendLine("                    {");
+        sourceBuilder.AppendLine("                        executionResults[currentId] = dependencyResult;");
+        sourceBuilder.AppendLine("                        return dependencyResult;");
+        sourceBuilder.AppendLine("                    }");
+        sourceBuilder.AppendLine();
+        sourceBuilder.AppendLine("                    if (publishedResults.TryGetValue(dependencyId, out var dependencyValues))");
+        sourceBuilder.AppendLine("                    {");
+        sourceBuilder.AppendLine("                        foreach (var (resultId, resultValue) in dependencyValues)");
+        sourceBuilder.AppendLine("                        {");
+        sourceBuilder.AppendLine("                            collectedExecutionResults[resultId] = resultValue;");
+        sourceBuilder.AppendLine("                        }");
+        sourceBuilder.AppendLine("                    }");
+        sourceBuilder.AppendLine("                }");
+        sourceBuilder.AppendLine();
+        sourceBuilder.AppendLine("                var collectedResults = collectedExecutionResults.ToImmutable();");
+        sourceBuilder.AppendLine("                var result = currentId == rootId");
+        sourceBuilder.AppendLine("                    ? await rootExecutor(currentId, collectedResults, cancellationToken).ConfigureAwait(false)");
+        sourceBuilder.AppendLine("                    : await target.ExecuteAsync(building, collectedResults, cancellationToken).ConfigureAwait(false);");
+        sourceBuilder.AppendLine("                executionResults[currentId] = result;");
+        sourceBuilder.AppendLine("                publishedResults[currentId] = PublishExecutionResult(currentId, result, collectedResults);");
+        sourceBuilder.AppendLine("                return result;");
+        sourceBuilder.AppendLine("            }");
+        sourceBuilder.AppendLine("            finally");
+        sourceBuilder.AppendLine("            {");
+        sourceBuilder.AppendLine("                stack.Remove(currentId);");
+        sourceBuilder.AppendLine("            }");
+        sourceBuilder.AppendLine("        }");
+        sourceBuilder.AppendLine("    }");
+        sourceBuilder.AppendLine();
         sourceBuilder.AppendLine("    public static global::System.Collections.Immutable.ImmutableArray<global::Hakaze.Build.Abstractions.ITarget> GetTargets(");
         sourceBuilder.AppendLine("        global::Hakaze.Build.Abstractions.IBuilding building,");
         sourceBuilder.AppendLine("        global::System.Threading.CancellationToken cancellationToken = default)");
@@ -397,6 +563,10 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
 
         foreach (var method in model.Methods)
         {
+            AppendInvokeApi(sourceBuilder, model, method);
+            sourceBuilder.AppendLine();
+            AppendInvokeCore(sourceBuilder, method);
+            sourceBuilder.AppendLine();
             AppendWrapper(sourceBuilder, method);
             sourceBuilder.AppendLine();
         }
@@ -455,13 +625,186 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
                 builder.Append(')');
             }
 
-            foreach (var parameter in method.Parameters.Where(static parameter => parameter.Kind == TargetParameterKind.Retrieval))
-            {
-                builder.Append(", ").Append(GetIdVariableName(parameter.RetrievalTargetName!));
-            }
-
             builder.AppendLine("));");
         }
+    }
+
+    private static void AppendInvokeApi(StringBuilder builder, ExportedTypeModel model, TargetMethodModel method)
+    {
+        if (model.IsPerProject)
+        {
+            builder.Append("    public static global::System.Threading.Tasks.Task<global::Hakaze.Build.Abstractions.ExecutionResult> ")
+                .Append(method.InvokeMethodName)
+                .AppendLine("(");
+            builder.AppendLine("        global::Hakaze.Build.Abstractions.IEvaluatedBuilding building,");
+            builder.AppendLine("        global::System.Threading.CancellationToken cancellationToken = default)");
+            builder.AppendLine("    {");
+            builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(building);");
+            builder.Append("        return ").Append(method.InvokeMethodName).Append("(building, ")
+                .Append(method.ResolveTargetIdMethodName)
+                .AppendLine("(building, cancellationToken), cancellationToken, ")
+                .Append(method.MethodName)
+                .AppendLine(");");
+            builder.AppendLine("    }");
+            builder.AppendLine();
+            builder.Append("    public static global::System.Threading.Tasks.Task<global::Hakaze.Build.Abstractions.ExecutionResult> ")
+                .Append(method.InvokeMethodName)
+                .AppendLine("(");
+            builder.AppendLine("        global::Hakaze.Build.Abstractions.IEvaluatedBuilding building,");
+            builder.AppendLine("        global::System.Threading.CancellationToken cancellationToken,");
+            builder.Append("        ").Append(method.InvokerDelegateName).AppendLine(" implementation)");
+            builder.AppendLine("    {");
+            builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(building);");
+            builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(implementation);");
+            builder.Append("        return ").Append(method.InvokeMethodName).Append("(building, ")
+                .Append(method.ResolveTargetIdMethodName)
+                .AppendLine("(building, cancellationToken), cancellationToken, implementation);");
+            builder.AppendLine("    }");
+            builder.AppendLine();
+            builder.Append("    public static global::System.Threading.Tasks.Task<global::Hakaze.Build.Abstractions.ExecutionResult> ")
+                .Append(method.InvokeMethodName)
+                .AppendLine("(");
+            builder.AppendLine("        global::Hakaze.Build.Abstractions.IEvaluatedBuilding building,");
+            builder.AppendLine("        global::Hakaze.Build.Abstractions.TargetId targetId,");
+            builder.AppendLine("        global::System.Threading.CancellationToken cancellationToken = default)");
+            builder.AppendLine("    {");
+            builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(building);");
+            builder.Append("        return ").Append(method.InvokeMethodName).Append("(building, targetId, cancellationToken, ")
+                .Append(method.MethodName)
+                .AppendLine(");");
+            builder.AppendLine("    }");
+            builder.AppendLine();
+            builder.Append("    public static global::System.Threading.Tasks.Task<global::Hakaze.Build.Abstractions.ExecutionResult> ")
+                .Append(method.InvokeMethodName)
+                .AppendLine("(");
+            builder.AppendLine("        global::Hakaze.Build.Abstractions.IEvaluatedBuilding building,");
+            builder.AppendLine("        global::Hakaze.Build.Abstractions.TargetId targetId,");
+            builder.AppendLine("        global::System.Threading.CancellationToken cancellationToken,");
+            builder.Append("        ").Append(method.InvokerDelegateName).AppendLine(" implementation)");
+            builder.AppendLine("    {");
+            builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(building);");
+            builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(implementation);");
+            builder.Append("        ").Append(method.ValidateTargetIdMethodName).AppendLine("(building, targetId, cancellationToken);");
+            builder.Append("        return ExecuteGeneratedTargetAsync(building, targetId, cancellationToken, (rootId, collectedExecutionResults, token) => ")
+                .Append(method.InvokeCoreMethodName)
+                .AppendLine("(rootId, building, collectedExecutionResults, token, implementation));");
+            builder.AppendLine("    }");
+            builder.AppendLine();
+            builder.Append("    private static global::Hakaze.Build.Abstractions.TargetId ").Append(method.ResolveTargetIdMethodName).AppendLine("(");
+            builder.AppendLine("        global::Hakaze.Build.Abstractions.IEvaluatedBuilding building,");
+            builder.AppendLine("        global::System.Threading.CancellationToken cancellationToken)");
+            builder.AppendLine("    {");
+            builder.AppendLine("        var targetSource = new global::Hakaze.Build.Abstractions.TargetSource(GetTargetSourceId(building, cancellationToken));");
+            builder.AppendLine("        var expectedConfigId = building.Config.Id;");
+            builder.Append("        global::Hakaze.Build.Abstractions.TargetId? matchedTargetId = null;").AppendLine();
+            builder.AppendLine();
+            builder.AppendLine("        foreach (var targetId in building.Targets.Keys)");
+            builder.AppendLine("        {");
+            builder.Append("            if (targetId.ConfigId != expectedConfigId || targetId.Name != ").Append(method.Name).AppendLine("Id || targetId.Source != targetSource)");
+            builder.AppendLine("            {");
+            builder.AppendLine("                continue;");
+            builder.AppendLine("            }");
+            builder.AppendLine();
+            builder.AppendLine("            if (matchedTargetId is not null)");
+            builder.AppendLine("            {");
+            builder.Append("                throw new global::System.InvalidOperationException(\"Target '").Append(method.Name).Append("' is exported per project; use ")
+                .Append(method.InvokeMethodName).AppendLine("(building, targetId, ...) to select a concrete target.\");");
+            builder.AppendLine("            }");
+            builder.AppendLine();
+            builder.AppendLine("            matchedTargetId = targetId;");
+            builder.AppendLine("        }");
+            builder.AppendLine();
+            builder.AppendLine("        if (matchedTargetId is null)");
+            builder.AppendLine("        {");
+            builder.Append("            throw new global::System.InvalidOperationException(\"Target '").Append(method.Name).AppendLine("' was not found.\");");
+            builder.AppendLine("        }");
+            builder.AppendLine();
+            builder.AppendLine("        return matchedTargetId.Value;");
+            builder.AppendLine("    }");
+            builder.AppendLine();
+            builder.Append("    private static void ").Append(method.ValidateTargetIdMethodName).AppendLine("(");
+            builder.AppendLine("        global::Hakaze.Build.Abstractions.IEvaluatedBuilding building,");
+            builder.AppendLine("        global::Hakaze.Build.Abstractions.TargetId targetId,");
+            builder.AppendLine("        global::System.Threading.CancellationToken cancellationToken)");
+            builder.AppendLine("    {");
+            builder.AppendLine("        var expectedSource = new global::Hakaze.Build.Abstractions.TargetSource(GetTargetSourceId(building, cancellationToken));");
+            builder.Append("        if (targetId.ConfigId != building.Config.Id || targetId.Name != ").Append(method.Name).AppendLine("Id || targetId.Source != expectedSource)");
+            builder.AppendLine("        {");
+            builder.Append("            throw new global::System.ArgumentException(\"TargetId does not identify target '").Append(method.Name).AppendLine("' for the current build.\", nameof(targetId));");
+            builder.AppendLine("        }");
+            builder.AppendLine("    }");
+        }
+        else
+        {
+            builder.Append("    public static global::System.Threading.Tasks.Task<global::Hakaze.Build.Abstractions.ExecutionResult> ")
+                .Append(method.InvokeMethodName)
+                .AppendLine("(");
+            builder.AppendLine("        global::Hakaze.Build.Abstractions.IEvaluatedBuilding building,");
+            builder.AppendLine("        global::System.Threading.CancellationToken cancellationToken = default)");
+            builder.AppendLine("    {");
+            builder.Append("        return ").Append(method.InvokeMethodName).Append("(building, cancellationToken, ").Append(method.MethodName).AppendLine(");");
+            builder.AppendLine("    }");
+            builder.AppendLine();
+            builder.Append("    public static global::System.Threading.Tasks.Task<global::Hakaze.Build.Abstractions.ExecutionResult> ")
+                .Append(method.InvokeMethodName)
+                .AppendLine("(");
+            builder.AppendLine("        global::Hakaze.Build.Abstractions.IEvaluatedBuilding building,");
+            builder.AppendLine("        global::System.Threading.CancellationToken cancellationToken,");
+            builder.Append("        ").Append(method.InvokerDelegateName).AppendLine(" implementation)");
+            builder.AppendLine("    {");
+            builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(building);");
+            builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(implementation);");
+            builder.Append("        var targetId = ").Append(method.CreateTargetIdMethodName).AppendLine("(building, cancellationToken);");
+            builder.Append("        return ExecuteGeneratedTargetAsync(building, targetId, cancellationToken, (rootId, collectedExecutionResults, token) => ")
+                .Append(method.InvokeCoreMethodName)
+                .AppendLine("(rootId, building, collectedExecutionResults, token, implementation));");
+            builder.AppendLine("    }");
+            builder.AppendLine();
+            builder.Append("    private static global::Hakaze.Build.Abstractions.TargetId ").Append(method.CreateTargetIdMethodName).AppendLine("(");
+            builder.AppendLine("        global::Hakaze.Build.Abstractions.IBuilding building,");
+            builder.AppendLine("        global::System.Threading.CancellationToken cancellationToken)");
+            builder.AppendLine("    {");
+            builder.Append("        return new global::Hakaze.Build.Abstractions.TargetId(new global::Hakaze.Build.Abstractions.ProjectId(\"//global/")
+                .Append(EscapeStringLiteral(model.FullyQualifiedTypeName))
+                .Append("\"), building.Config.Id, ")
+                .Append(method.Name)
+                .AppendLine("Id, new global::Hakaze.Build.Abstractions.TargetSource(GetTargetSourceId(building, cancellationToken)));");
+            builder.AppendLine("    }");
+        }
+    }
+
+    private static void AppendInvokeCore(StringBuilder builder, TargetMethodModel method)
+    {
+        builder.Append("    private static async global::System.Threading.Tasks.Task<global::Hakaze.Build.Abstractions.ExecutionResult> ")
+            .Append(method.InvokeCoreMethodName)
+            .AppendLine("(");
+        builder.AppendLine("        global::Hakaze.Build.Abstractions.TargetId targetId,");
+        builder.AppendLine("        global::Hakaze.Build.Abstractions.IEvaluatedBuilding building,");
+        builder.AppendLine("        global::System.Collections.Immutable.ImmutableDictionary<global::Hakaze.Build.Abstractions.TargetId, object?> collectedExecutionResults,");
+        builder.AppendLine("        global::System.Threading.CancellationToken cancellationToken,");
+        builder.Append("        ").Append(method.InvokerDelegateName).AppendLine(" implementation)");
+        builder.AppendLine("    {");
+        builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(building);");
+        builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(implementation);");
+        builder.AppendLine();
+
+        foreach (var parameter in method.Parameters.Where(static parameter => parameter.Kind == TargetParameterKind.Retrieval))
+        {
+            builder.Append("        if (!TryGetRetrievedValue<").Append(parameter.TypeName).Append(">(collectedExecutionResults, new global::Hakaze.Build.Abstractions.TargetId(targetId.ProjectId, targetId.ConfigId, ")
+                .Append(parameter.RetrievalTargetName)
+                .AppendLine("Id, targetId.Source), out var ")
+                .Append(parameter.Name)
+                .AppendLine(", out var failure))");
+            builder.AppendLine("        {");
+            builder.AppendLine("            return failure!;");
+            builder.AppendLine("        }");
+            builder.AppendLine();
+        }
+
+        builder.Append("        return await implementation(");
+        AppendInvocationArguments(builder, method.Parameters);
+        builder.AppendLine(").ConfigureAwait(false);");
+        builder.AppendLine("    }");
     }
 
     private static void AppendWrapper(StringBuilder builder, TargetMethodModel method)
@@ -471,73 +814,61 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
         builder.AppendLine("        private readonly global::Hakaze.Build.Abstractions.TargetId _id;");
         builder.AppendLine("        private readonly global::System.Collections.Immutable.ImmutableArray<global::Hakaze.Build.Abstractions.TargetId> _requiredPreparation;");
 
-        foreach (var parameter in method.Parameters.Where(static parameter => parameter.Kind == TargetParameterKind.Retrieval))
-        {
-            builder.Append("        private readonly global::Hakaze.Build.Abstractions.TargetId ").Append(parameter.DependencyFieldName).AppendLine(";");
-        }
-
         builder.AppendLine();
         builder.Append("        public ").Append(method.WrapperName).Append('(');
         builder.Append("global::Hakaze.Build.Abstractions.TargetId id, ");
         builder.Append("global::System.Collections.Immutable.ImmutableArray<global::Hakaze.Build.Abstractions.TargetId> requiredPreparation");
-        foreach (var parameter in method.Parameters.Where(static parameter => parameter.Kind == TargetParameterKind.Retrieval))
-        {
-            builder.Append(", global::Hakaze.Build.Abstractions.TargetId ").Append(parameter.DependencyArgumentName);
-        }
-
         builder.AppendLine(")");
         builder.AppendLine("        {");
         builder.AppendLine("            _id = id;");
         builder.AppendLine("            _requiredPreparation = requiredPreparation;");
-        foreach (var parameter in method.Parameters.Where(static parameter => parameter.Kind == TargetParameterKind.Retrieval))
-        {
-            builder.Append("            ").Append(parameter.DependencyFieldName).Append(" = ").Append(parameter.DependencyArgumentName).AppendLine(";");
-        }
         builder.AppendLine("        }");
         builder.AppendLine();
         builder.AppendLine("        public global::Hakaze.Build.Abstractions.TargetId Id => _id;");
         builder.AppendLine();
         builder.AppendLine("        public global::System.Collections.Immutable.ImmutableArray<global::Hakaze.Build.Abstractions.TargetId> RequiredPreparation => _requiredPreparation;");
         builder.AppendLine();
-        builder.AppendLine("        public async global::System.Threading.Tasks.Task<global::Hakaze.Build.Abstractions.ExecutionResult> ExecuteAsync(");
+        builder.AppendLine("        public global::System.Threading.Tasks.Task<global::Hakaze.Build.Abstractions.ExecutionResult> ExecuteAsync(");
         builder.AppendLine("            global::Hakaze.Build.Abstractions.IEvaluatedBuilding building,");
         builder.AppendLine("            global::System.Collections.Immutable.ImmutableDictionary<global::Hakaze.Build.Abstractions.TargetId, object?> collectedExecutionResults,");
         builder.AppendLine("            global::System.Threading.CancellationToken cancellationToken = default)");
         builder.AppendLine("        {");
+        builder.Append("            return ").Append(method.InvokeCoreMethodName).AppendLine("(_id, building, collectedExecutionResults, cancellationToken, " + method.MethodName + ");");
+        builder.AppendLine("        }");
+        builder.AppendLine("    }");
+    }
 
-        foreach (var parameter in method.Parameters.Where(static parameter => parameter.Kind == TargetParameterKind.Retrieval))
+    private static void AppendParameterSignature(StringBuilder builder, ImmutableArray<TargetParameterModel> parameters)
+    {
+        for (var index = 0; index < parameters.Length; index++)
         {
-            builder.Append("            if (!TryGetRetrievedValue<").Append(parameter.TypeName).Append(">(collectedExecutionResults, ")
-                .Append(parameter.DependencyFieldName)
-                .Append(", out var ")
-                .Append(parameter.Name)
-                .AppendLine(", out var failure))");
-            builder.AppendLine("            {");
-            builder.AppendLine("                return failure!;");
-            builder.AppendLine("            }");
-            builder.AppendLine();
-        }
-
-        builder.Append("            return await ").Append(method.Name).Append('(');
-        for (var parameterIndex = 0; parameterIndex < method.Parameters.Length; parameterIndex++)
-        {
-            if (parameterIndex > 0)
+            if (index > 0)
             {
                 builder.Append(", ");
             }
 
-            var parameter = method.Parameters[parameterIndex];
+            builder.Append(parameters[index].TypeName).Append(' ').Append(parameters[index].Name);
+        }
+    }
+
+    private static void AppendInvocationArguments(StringBuilder builder, ImmutableArray<TargetParameterModel> parameters)
+    {
+        for (var index = 0; index < parameters.Length; index++)
+        {
+            if (index > 0)
+            {
+                builder.Append(", ");
+            }
+
+            var parameter = parameters[index];
             builder.Append(parameter.Kind switch
             {
-                TargetParameterKind.Building => "building",
+                TargetParameterKind.EvaluatedBuilding => "building",
+                TargetParameterKind.CollectedExecutionResults => "collectedExecutionResults",
                 TargetParameterKind.CancellationToken => "cancellationToken",
                 _ => parameter.Name
             });
         }
-
-        builder.AppendLine(").ConfigureAwait(false);");
-        builder.AppendLine("        }");
-        builder.AppendLine("    }");
     }
 
     private static bool ReturnsTaskOfExecutionResult(ITypeSymbol returnType)
@@ -552,6 +883,16 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
     private static bool IsType(ITypeSymbol typeSymbol, string @namespace, string name)
     {
         return typeSymbol.Name == name && typeSymbol.ContainingNamespace.ToDisplayString() == @namespace;
+    }
+
+    private static bool IsCollectedExecutionResultsType(ITypeSymbol typeSymbol)
+    {
+        return typeSymbol is INamedTypeSymbol namedType &&
+               namedType.Name == "ImmutableDictionary" &&
+               namedType.ContainingNamespace.ToDisplayString() == "System.Collections.Immutable" &&
+               namedType.TypeArguments.Length == 2 &&
+               IsType(namedType.TypeArguments[0], "Hakaze.Build.Abstractions", "TargetId") &&
+               namedType.TypeArguments[1].SpecialType == SpecialType.System_Object;
     }
 
     private static bool HasAttribute(ImmutableArray<AttributeData> attributes, string attributeName)
@@ -767,6 +1108,18 @@ public sealed class RetrievalAttribute : global::System.Attribute
 
         public string IdVariableName { get; }
 
+        public string InvokerDelegateName => $"{MethodName}InvokerDelegate";
+
+        public string InvokeMethodName => $"Invoke{MethodName}";
+
+        public string InvokeCoreMethodName => $"Invoke{MethodName}Core";
+
+        public string CreateTargetIdMethodName => $"Create{MethodName}TargetId";
+
+        public string ResolveTargetIdMethodName => $"Resolve{MethodName}TargetId";
+
+        public string ValidateTargetIdMethodName => $"Validate{MethodName}TargetId";
+
         public ImmutableArray<TargetParameterModel> Parameters { get; }
 
         public ImmutableArray<string> ExplicitDependencies { get; }
@@ -795,10 +1148,6 @@ public sealed class RetrievalAttribute : global::System.Attribute
         public TargetParameterKind Kind { get; }
 
         public string? RetrievalTargetName { get; }
-
-        public string DependencyFieldName => $"_{Name}DependencyId";
-
-        public string DependencyArgumentName => $"{Name}DependencyId";
     }
 
     private sealed class TargetReferenceModel
@@ -816,7 +1165,8 @@ public sealed class RetrievalAttribute : global::System.Attribute
 
     private enum TargetParameterKind
     {
-        Building,
+        EvaluatedBuilding,
+        CollectedExecutionResults,
         Retrieval,
         CancellationToken
     }

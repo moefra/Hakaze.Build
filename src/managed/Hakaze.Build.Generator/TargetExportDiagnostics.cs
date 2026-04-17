@@ -30,18 +30,18 @@ internal static class TargetExportDiagnostics
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
-    public static readonly DiagnosticDescriptor BuildingParameterMustBeFirst = new(
+    public static readonly DiagnosticDescriptor BuildingParameterIsNotSupported = new(
         id: "HBG0004",
-        title: "IBuilding parameter must be first",
-        messageFormat: "Method '{0}' may only declare IBuilding as its first parameter.",
+        title: "IBuilding parameter is not supported",
+        messageFormat: "Method '{0}' must use IEvaluatedBuilding instead of IBuilding for execution context.",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
-    public static readonly DiagnosticDescriptor CancellationTokenParameterMustBeLast = new(
+    public static readonly DiagnosticDescriptor DuplicateCancellationTokenParameter = new(
         id: "HBG0005",
-        title: "CancellationToken parameter must be last",
-        messageFormat: "Method '{0}' may only declare CancellationToken as its last parameter.",
+        title: "CancellationToken parameter must be unique",
+        messageFormat: "Method '{0}' declares CancellationToken more than once.",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true);
@@ -82,6 +82,22 @@ internal static class TargetExportDiagnostics
         id: "HBG0010",
         title: "Export target containers must be top-level non-generic classes",
         messageFormat: "Type '{0}' must be a top-level non-generic partial class to use [ExportTargets].",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor DuplicateEvaluatedBuildingParameter = new(
+        id: "HBG0011",
+        title: "IEvaluatedBuilding parameter must be unique",
+        messageFormat: "Method '{0}' declares IEvaluatedBuilding more than once.",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor DuplicateCollectedExecutionResultsParameter = new(
+        id: "HBG0012",
+        title: "collectedExecutionResults parameter must be unique",
+        messageFormat: "Method '{0}' declares ImmutableDictionary<TargetId, object?> more than once.",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true);

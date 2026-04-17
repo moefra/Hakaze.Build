@@ -1,2 +1,15 @@
 <Solution>
+  <Folder Name="/items/">
+    <File Path="BannedSymbols.txt" />
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="global.json" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Hakaze.Build.Core.Tests/Hakaze.Build.Core.Tests.csproj" />
+  </Folder>
+  <Project Path="src/managed/Hakaze.Build.Abstractions/Hakaze.Build.Abstractions.csproj" />
+  <Project Path="src/managed/Hakaze.Build.Cli/Hakaze.Build.Cli.csproj" />
+  <Project Path="src/managed/Hakaze.Build.Core/Hakaze.Build.Core.csproj" />
+  <Project Path="src/managed/Hakaze.Build.Utility/Hakaze.Build.Utility.csproj" />
 </Solution>

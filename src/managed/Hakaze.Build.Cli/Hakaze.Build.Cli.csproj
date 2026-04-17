@@ -1,0 +1,12 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\Hakaze.Build.Core\Hakaze.Build.Core.csproj" />
+      <PackageReference Include="Microsoft.Extensions.Hosting" />
+        <PackageReference Include="ZLogger" />
+    </ItemGroup>
+
+</Project>

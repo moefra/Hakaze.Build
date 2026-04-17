@@ -7,7 +7,7 @@ personality = "pragmatic"
 web_search = "live"
 
 approval_policy = "on-request"
-sandbox_mode = "danger-full-access"
+sandbox_mode = "workspace-write"
 
 model_reasoning_effort = "high"
 model_reasoning_summary = "concise"

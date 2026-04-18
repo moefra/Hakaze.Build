@@ -286,6 +286,9 @@
         "dependencies": {
           "System.Runtime.CompilerServices.Unsafe": "6.1.0"
         }
+      },
+      "hakaze.build.utility": {
+        "type": "Project"
       }
     }
   }

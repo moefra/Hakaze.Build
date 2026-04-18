@@ -62,3 +62,28 @@ public sealed class RetrievalAttribute : global::System.Attribute
 
     public string TargetName { get; }
 }
+
+[global::System.AttributeUsage(global::System.AttributeTargets.Class, Inherited = false, AllowMultiple = false)]
+public sealed class ExportOptionsAttribute : global::System.Attribute
+{
+}
+
+[global::System.AttributeUsage(global::System.AttributeTargets.Property, Inherited = false, AllowMultiple = false)]
+public sealed class OptionAttribute : global::System.Attribute
+{
+    public OptionAttribute()
+    {
+    }
+
+    public OptionAttribute(string name)
+    {
+        Name = name;
+    }
+
+    public string? Name { get; }
+}
+
+[global::System.AttributeUsage(global::System.AttributeTargets.Method, Inherited = false, AllowMultiple = true)]
+public sealed class OptionValidatorAttribute : global::System.Attribute
+{
+}

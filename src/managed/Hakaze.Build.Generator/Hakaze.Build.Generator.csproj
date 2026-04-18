@@ -15,4 +15,8 @@
         <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces"/>
     </ItemGroup>
 
+    <ItemGroup>
+        <ProjectReference Include="..\Hakaze.Build.Utility\Hakaze.Build.Utility.csproj" />
+    </ItemGroup>
+
 </Project>

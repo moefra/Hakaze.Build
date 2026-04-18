@@ -1,8 +1,9 @@
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use ignore::{DirEntry, WalkBuilder, WalkState};
 use rayon::prelude::*;
+use roxmltree::Document;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -31,15 +32,15 @@ fn run() -> Result<i32> {
         find_workspace(&env::current_dir().context("failed to determine current directory")?)?;
     let config = load_config(&workspace)?;
     let cache = load_cache(&workspace.cache_path)?;
-    let source_files = collect_source_files(&workspace.root, &config.projects)?;
-    let file_hashes = hash_source_files(&source_files)?;
+    let tracked_files = collect_tracked_files(&workspace.root, &config.projects)?;
+    let file_hashes = hash_tracked_files(&tracked_files)?;
 
-    let mut target_dll = query_target_dll(&config.main_project)?;
+    let mut target_dll = query_target_dll(&config.project)?;
     let needs_rebuild = should_rebuild(cache.as_ref(), &file_hashes, &target_dll);
 
     if needs_rebuild {
-        run_dotnet_build(&config.main_project)?;
-        target_dll = query_target_dll(&config.main_project)?;
+        run_dotnet_build(&config.project)?;
+        target_dll = query_target_dll(&config.project)?;
         ensure!(
             target_dll.is_file(),
             "dotnet build succeeded but target DLL does not exist: {}",
@@ -66,13 +67,12 @@ struct WorkspacePaths {
 #[derive(Debug, Deserialize)]
 struct ConfigFile {
     version: u32,
-    main_project: String,
-    projects: Vec<String>,
+    project: String,
 }
 
 #[derive(Debug)]
 struct ResolvedConfig {
-    main_project: PathBuf,
+    project: PathBuf,
     projects: Vec<PathBuf>,
 }
 
@@ -85,7 +85,7 @@ struct CacheFile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SourceFile {
+struct TrackedFile {
     relative_path: String,
     absolute_path: PathBuf,
 }
@@ -132,34 +132,16 @@ fn validate_config(config: ConfigFile, workspace_root: &Path) -> Result<Resolved
         config.version,
         SCHEMA_VERSION
     );
-    ensure!(
-        !config.projects.is_empty(),
-        "`projects` must contain at least one C# project"
-    );
 
-    let main_project = resolve_project_path(workspace_root, &config.main_project)
-        .context("failed to resolve `main_project`")?;
-    let mut projects = Vec::with_capacity(config.projects.len());
+    let project = resolve_project_path(workspace_root, &config.project)
+        .context("failed to resolve `project`")?;
+    let projects = discover_projects(workspace_root, &project)?;
 
-    for project in &config.projects {
-        projects.push(
-            resolve_project_path(workspace_root, project)
-                .with_context(|| format!("failed to resolve project `{project}`"))?,
-        );
-    }
-
-    ensure!(
-        projects.iter().any(|project| project == &main_project),
-        "`main_project` must also appear in `projects`"
-    );
-
-    Ok(ResolvedConfig {
-        main_project,
-        projects,
-    })
+    Ok(ResolvedConfig { project, projects })
 }
 
 fn resolve_project_path(workspace_root: &Path, configured_path: &str) -> Result<PathBuf> {
+    let workspace_root = canonicalize_workspace_root(workspace_root)?;
     let relative_path = Path::new(configured_path);
     ensure!(
         !relative_path.is_absolute(),
@@ -179,6 +161,15 @@ fn resolve_project_path(workspace_root: &Path, configured_path: &str) -> Result<
 
     dunce::canonicalize(&absolute_path)
         .with_context(|| format!("failed to canonicalize {}", absolute_path.display()))
+}
+
+fn canonicalize_workspace_root(workspace_root: &Path) -> Result<PathBuf> {
+    dunce::canonicalize(workspace_root).with_context(|| {
+        format!(
+            "failed to canonicalize workspace root {}",
+            workspace_root.display()
+        )
+    })
 }
 
 fn load_cache(cache_path: &Path) -> Result<Option<CacheFile>> {
@@ -201,16 +192,114 @@ fn load_cache(cache_path: &Path) -> Result<Option<CacheFile>> {
     Ok(Some(cache))
 }
 
-fn collect_source_files(workspace_root: &Path, projects: &[PathBuf]) -> Result<Vec<SourceFile>> {
+fn discover_projects(workspace_root: &Path, entry_project: &Path) -> Result<Vec<PathBuf>> {
+    let entry_project = dunce::canonicalize(entry_project)
+        .with_context(|| format!("failed to canonicalize {}", entry_project.display()))?;
+    let mut visited = BTreeSet::new();
+    let mut pending = VecDeque::from([entry_project]);
+    let mut projects = Vec::new();
+
+    while let Some(project) = pending.pop_front() {
+        if !visited.insert(project.clone()) {
+            continue;
+        }
+
+        let referenced_projects = parse_project_references(workspace_root, &project)?;
+        projects.push(project);
+        pending.extend(referenced_projects);
+    }
+
+    Ok(projects)
+}
+
+fn parse_project_references(workspace_root: &Path, project: &Path) -> Result<Vec<PathBuf>> {
+    let project_text = fs::read_to_string(project)
+        .with_context(|| format!("failed to read project file {}", project.display()))?;
+    let project_text = project_text
+        .strip_prefix('\u{feff}')
+        .unwrap_or(&project_text);
+    let document = Document::parse(project_text)
+        .with_context(|| format!("failed to parse XML from {}", project.display()))?;
+    let project_dir = project
+        .parent()
+        .ok_or_else(|| anyhow!("project path has no parent: {}", project.display()))?;
+
+    document
+        .descendants()
+        .filter(|node| node.has_tag_name("ProjectReference"))
+        .filter_map(|node| node.attribute("Include"))
+        .map(|include| resolve_project_reference_path(workspace_root, project_dir, include))
+        .collect()
+}
+
+fn resolve_project_reference_path(
+    workspace_root: &Path,
+    project_dir: &Path,
+    include: &str,
+) -> Result<PathBuf> {
+    let workspace_root = canonicalize_workspace_root(workspace_root)?;
+    ensure!(
+        !include.contains("$(") && !include.contains("%(") && !include.contains("@("),
+        "project reference uses unsupported MSBuild expression: {include}"
+    );
+
+    let relative_path = Path::new(include);
+    ensure!(
+        !relative_path.is_absolute(),
+        "project reference must be relative to its project file: {include}"
+    );
+    ensure!(
+        relative_path.extension() == Some(OsStr::new("csproj")),
+        "project reference must point to a .csproj file: {include}"
+    );
+
+    let absolute_path = project_dir.join(relative_path);
+    ensure!(
+        absolute_path.is_file(),
+        "referenced project file does not exist: {}",
+        absolute_path.display()
+    );
+
+    let canonical_path = dunce::canonicalize(&absolute_path)
+        .with_context(|| format!("failed to canonicalize {}", absolute_path.display()))?;
+    canonical_path
+        .strip_prefix(&workspace_root)
+        .with_context(|| {
+            format!(
+                "referenced project is outside workspace root: {}",
+                canonical_path.display()
+            )
+        })?;
+
+    Ok(canonical_path)
+}
+
+fn collect_tracked_files(workspace_root: &Path, projects: &[PathBuf]) -> Result<Vec<TrackedFile>> {
     let files = Arc::new(Mutex::new(BTreeMap::<String, PathBuf>::new()));
     let first_error = Arc::new(Mutex::new(None::<anyhow::Error>));
     let workspace_root = Arc::new(workspace_root.to_path_buf());
 
     for project in projects {
+        let project_relative = relative_path_string(workspace_root.as_path(), project)?;
+        files
+            .lock()
+            .expect("mutex poisoned")
+            .insert(project_relative, project.clone());
+
         let project_dir = project
             .parent()
             .map(Path::to_path_buf)
             .ok_or_else(|| anyhow!("project path has no parent: {}", project.display()))?;
+        let package_lock = project_dir.join("packages.lock.json");
+        if package_lock.is_file() {
+            let package_lock_relative =
+                relative_path_string(workspace_root.as_path(), &package_lock)?;
+            files
+                .lock()
+                .expect("mutex poisoned")
+                .insert(package_lock_relative, package_lock);
+        }
+
         let files = Arc::clone(&files);
         let first_error = Arc::clone(&first_error);
         let workspace_root = Arc::clone(&workspace_root);
@@ -262,7 +351,7 @@ fn collect_source_files(workspace_root: &Path, projects: &[PathBuf]) -> Result<V
 
     Ok(files
         .into_iter()
-        .map(|(relative_path, absolute_path)| SourceFile {
+        .map(|(relative_path, absolute_path)| TrackedFile {
             relative_path,
             absolute_path,
         })
@@ -307,9 +396,23 @@ fn is_excluded_directory(path: &Path) -> bool {
 }
 
 fn relative_path_string(root: &Path, path: &Path) -> Result<String> {
-    let relative = path
-        .strip_prefix(root)
-        .with_context(|| format!("{} is not inside {}", path.display(), root.display()))?;
+    if let Ok(relative) = path.strip_prefix(root) {
+        return Ok(path_to_slash_string(relative));
+    }
+
+    let canonical_root = canonicalize_workspace_root(root)?;
+    let canonical_path = dunce::canonicalize(path)
+        .with_context(|| format!("failed to canonicalize {}", path.display()))?;
+    let relative = canonical_path
+        .strip_prefix(&canonical_root)
+        .with_context(|| {
+            format!(
+                "{} is not inside {}",
+                canonical_path.display(),
+                canonical_root.display()
+            )
+        })?;
+
     Ok(path_to_slash_string(relative))
 }
 
@@ -320,18 +423,18 @@ fn path_to_slash_string(path: &Path) -> String {
         .join("/")
 }
 
-fn hash_source_files(files: &[SourceFile]) -> Result<BTreeMap<String, String>> {
+fn hash_tracked_files(files: &[TrackedFile]) -> Result<BTreeMap<String, String>> {
     let hashed_files = files
         .par_iter()
-        .map(|source_file| -> Result<(String, String)> {
-            let bytes = fs::read(&source_file.absolute_path).with_context(|| {
+        .map(|tracked_file| -> Result<(String, String)> {
+            let bytes = fs::read(&tracked_file.absolute_path).with_context(|| {
                 format!(
-                    "failed to read source file {}",
-                    source_file.absolute_path.display()
+                    "failed to read tracked file {}",
+                    tracked_file.absolute_path.display()
                 )
             })?;
             let hash = blake3::hash(&bytes).to_hex().to_string();
-            Ok((source_file.relative_path.clone(), hash))
+            Ok((tracked_file.relative_path.clone(), hash))
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -492,24 +595,15 @@ mod tests {
         let project_path = workspace_root.join("src/App/App.csproj");
         write_file(&project_path, "<Project />")?;
 
-        let missing_main = ConfigFile {
-            version: SCHEMA_VERSION,
-            main_project: "src/App/App.csproj".into(),
-            projects: vec!["src/Other/Other.csproj".into()],
-        };
-        assert!(validate_config(missing_main, workspace_root).is_err());
-
         let wrong_version = ConfigFile {
             version: 2,
-            main_project: "src/App/App.csproj".into(),
-            projects: vec!["src/App/App.csproj".into()],
+            project: "src/App/App.csproj".into(),
         };
         assert!(validate_config(wrong_version, workspace_root).is_err());
 
         let missing_project = ConfigFile {
             version: SCHEMA_VERSION,
-            main_project: "src/Missing/Missing.csproj".into(),
-            projects: vec!["src/Missing/Missing.csproj".into()],
+            project: "src/Missing/Missing.csproj".into(),
         };
         assert!(validate_config(missing_project, workspace_root).is_err());
 
@@ -517,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_source_files_skips_build_outputs_and_deduplicates() -> Result<()> {
+    fn collect_tracked_files_skips_build_outputs_and_deduplicates() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let workspace_root = temp_dir.path();
         let project_a = workspace_root.join("src/App/App.csproj");
@@ -542,7 +636,7 @@ mod tests {
             "class Ignored {}",
         )?;
 
-        let files = collect_source_files(workspace_root, &[project_a, project_b])?;
+        let files = collect_tracked_files(workspace_root, &[project_a, project_b])?;
         let paths = files
             .into_iter()
             .map(|file| file.relative_path)
@@ -551,11 +645,139 @@ mod tests {
         assert_eq!(
             paths,
             vec![
+                "src/App/App.csproj".to_string(),
                 "src/App/Program.cs".to_string(),
-                "src/App/Sub/Feature.cs".to_string()
+                "src/App/Sub/Feature.cs".to_string(),
+                "src/App/Sub/Sub.csproj".to_string(),
             ]
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn collect_tracked_files_includes_packages_lock_when_present() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let workspace_root = temp_dir.path();
+        let project = workspace_root.join("src/App/App.csproj");
+
+        write_file(&project, "<Project />")?;
+        write_file(
+            &workspace_root.join("src/App/Program.cs"),
+            "class Program {}",
+        )?;
+        write_file(&workspace_root.join("src/App/packages.lock.json"), "{}")?;
+
+        let files = collect_tracked_files(workspace_root, &[project])?;
+        let paths = files
+            .into_iter()
+            .map(|file| file.relative_path)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            paths,
+            vec![
+                "src/App/App.csproj".to_string(),
+                "src/App/Program.cs".to_string(),
+                "src/App/packages.lock.json".to_string(),
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn discover_projects_follows_transitive_references_and_deduplicates() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let workspace_root = temp_dir.path();
+        let app = workspace_root.join("src/App/App.csproj");
+        let core = workspace_root.join("src/Core/Core.csproj");
+        let util = workspace_root.join("src/Util/Util.csproj");
+
+        write_file(
+            &app,
+            r#"<Project><ItemGroup><ProjectReference Include="../Core/Core.csproj" /></ItemGroup></Project>"#,
+        )?;
+        write_file(
+            &core,
+            r#"<Project><ItemGroup><ProjectReference Include="../Util/Util.csproj" /></ItemGroup></Project>"#,
+        )?;
+        write_file(&util, "<Project />")?;
+
+        let projects = discover_projects(workspace_root, &app)?;
+        let paths = projects
+            .into_iter()
+            .map(|project| relative_path_string(workspace_root, &project))
+            .collect::<Result<Vec<_>>>()?;
+
+        assert_eq!(
+            paths,
+            vec![
+                "src/App/App.csproj".to_string(),
+                "src/Core/Core.csproj".to_string(),
+                "src/Util/Util.csproj".to_string(),
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn discover_projects_handles_cycles() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let workspace_root = temp_dir.path();
+        let app = workspace_root.join("src/App/App.csproj");
+        let lib = workspace_root.join("src/Lib/Lib.csproj");
+
+        write_file(
+            &app,
+            r#"<Project><ItemGroup><ProjectReference Include="../Lib/Lib.csproj" /></ItemGroup></Project>"#,
+        )?;
+        write_file(
+            &lib,
+            r#"<Project><ItemGroup><ProjectReference Include="../App/App.csproj" /></ItemGroup></Project>"#,
+        )?;
+
+        let projects = discover_projects(workspace_root, &app)?;
+        assert_eq!(projects.len(), 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn discover_projects_rejects_missing_or_outside_workspace_references() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let workspace_root = temp_dir.path();
+        let app = workspace_root.join("src/App/App.csproj");
+
+        write_file(
+            &app,
+            r#"<Project><ItemGroup><ProjectReference Include="../Missing/Missing.csproj" /></ItemGroup></Project>"#,
+        )?;
+        assert!(discover_projects(workspace_root, &app).is_err());
+
+        write_file(
+            &app,
+            r#"<Project><ItemGroup><ProjectReference Include="../../../outside.csproj" /></ItemGroup></Project>"#,
+        )?;
+        write_file(&temp_dir.path().join("outside.csproj"), "<Project />")?;
+        assert!(discover_projects(workspace_root, &app).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn discover_projects_rejects_msbuild_expressions() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let workspace_root = temp_dir.path();
+        let app = workspace_root.join("src/App/App.csproj");
+
+        write_file(
+            &app,
+            r#"<Project><ItemGroup><ProjectReference Include="$(RepoRoot)/Lib/Lib.csproj" /></ItemGroup></Project>"#,
+        )?;
+
+        assert!(discover_projects(workspace_root, &app).is_err());
         Ok(())
     }
 

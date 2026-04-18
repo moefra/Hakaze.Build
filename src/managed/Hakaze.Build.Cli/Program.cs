@@ -1,10 +1,11 @@
-﻿using Microsoft.Extensions.Hosting;
+﻿using Hakaze.Build.Abstractions;
+using Microsoft.Extensions.Hosting;
 
 namespace Hakaze.Build.Cli;
 
-class Program
+public class Program
 {
-    static async Task Main(string[] args)
+    public static async Task Main(string[] args, params TargetId[] defaultTargets)
     {
         var builder = Host.CreateEmptyApplicationBuilder(null);
 

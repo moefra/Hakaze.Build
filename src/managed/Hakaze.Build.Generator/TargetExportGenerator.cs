@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Text;
+using Hakaze.Build.Utility.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -17,12 +18,6 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
     private const string TargetSourceAttributeMetadataName = "Hakaze.Build.Abstractions.Generator.TargetSourceAttribute";
     private const string DependOnAttributeMetadataName = "Hakaze.Build.Abstractions.Generator.DependOnAttribute";
     private const string RetrievalAttributeMetadataName = "Hakaze.Build.Abstractions.Generator.RetrievalAttribute";
-
-    private static readonly SymbolDisplayFormat FullyQualifiedTypeFormat =
-        SymbolDisplayFormat.FullyQualifiedFormat
-                           .WithMiscellaneousOptions(
-                               SymbolDisplayFormat.FullyQualifiedFormat.MiscellaneousOptions |
-                               SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier);
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
@@ -59,7 +54,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
         }
 
         var diagnostics = ImmutableArray.CreateBuilder<Diagnostic>();
-        var typeDisplayName = typeSymbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+        var typeDisplayName = GeneratorRoslynUtilities.GetTypeDisplayName(typeSymbol);
         if (typeSymbol.ContainingType is not null || typeSymbol.TypeParameters.Length > 0)
         {
             diagnostics.Add(Diagnostic.Create(
@@ -78,11 +73,11 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             return CreateInvalidModel(typeSymbol, diagnostics.ToImmutable());
         }
 
-        var isPerProject = HasAttribute(typeSymbol.GetAttributes(), PerProjectAttributeMetadataName);
+        var isPerProject = GeneratorRoslynUtilities.HasAttribute(typeSymbol.GetAttributes(), PerProjectAttributeMetadataName);
         foreach (var method in typeSymbol.GetMembers().OfType<IMethodSymbol>().Where(static method => method.MethodKind == MethodKind.Ordinary))
         {
-            if (HasAttribute(method.GetAttributes(), TargetSourceAttributeMetadataName) &&
-                !HasAttribute(method.GetAttributes(), TargetAttributeMetadataName))
+            if (GeneratorRoslynUtilities.HasAttribute(method.GetAttributes(), TargetSourceAttributeMetadataName) &&
+                !GeneratorRoslynUtilities.HasAttribute(method.GetAttributes(), TargetAttributeMetadataName))
             {
                 diagnostics.Add(Diagnostic.Create(
                     TargetExportDiagnostics.TargetSourceAttributeRequiresTargetMethod,
@@ -94,13 +89,13 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
         var targetMethods = typeSymbol.GetMembers()
             .OfType<IMethodSymbol>()
             .Where(static method => method.MethodKind == MethodKind.Ordinary)
-            .Where(static method => HasAttribute(method.GetAttributes(), TargetAttributeMetadataName))
+            .Where(static method => GeneratorRoslynUtilities.HasAttribute(method.GetAttributes(), TargetAttributeMetadataName))
             .OrderBy(static method => method.Locations.FirstOrDefault(static location => location.IsInSource)?.SourceSpan.Start ?? int.MaxValue)
             .ToImmutableArray();
         var targetFactoryMethods = typeSymbol.GetMembers()
             .OfType<IMethodSymbol>()
             .Where(static method => method.MethodKind == MethodKind.Ordinary)
-            .Where(static method => HasAttribute(method.GetAttributes(), TargetFactoryAttributeMetadataName))
+            .Where(static method => GeneratorRoslynUtilities.HasAttribute(method.GetAttributes(), TargetFactoryAttributeMetadataName))
             .OrderBy(static method => method.Locations.FirstOrDefault(static location => location.IsInSource)?.SourceSpan.Start ?? int.MaxValue)
             .ToImmutableArray();
 
@@ -131,7 +126,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
                     TargetExportDiagnostics.DuplicateTargetName,
                     method.Location,
                     targetName,
-                    GetTypeDisplayName(typeSymbol)));
+                    GeneratorRoslynUtilities.GetTypeDisplayName(typeSymbol)));
                 method.MarkInvalid();
             }
         }
@@ -151,7 +146,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
                         TargetExportDiagnostics.UnknownTargetReference,
                         reference.Location,
                         reference.TargetName,
-                        GetTypeDisplayName(typeSymbol)));
+                        GeneratorRoslynUtilities.GetTypeDisplayName(typeSymbol)));
                     method.MarkInvalid();
                 }
             }
@@ -230,10 +225,10 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
                 ? string.Empty
                 : typeSymbol.ContainingNamespace.ToDisplayString(),
             typeName: typeSymbol.Name,
-            typeAccessibility: GetAccessibility(typeSymbol.DeclaredAccessibility),
+            typeAccessibility: GeneratorRoslynUtilities.GetAccessibility(typeSymbol.DeclaredAccessibility),
             factoryName: $"{typeSymbol.Name}Factory",
-            fullyQualifiedTypeName: GetFullyQualifiedTypeName(typeSymbol),
-            hintName: $"Hakaze.Build.Generator.{GetFullyQualifiedTypeName(typeSymbol).Replace('.', '_')}.g.cs",
+            fullyQualifiedTypeName: GeneratorRoslynUtilities.GetFullyQualifiedTypeName(typeSymbol),
+            hintName: $"Hakaze.Build.Generator.{GeneratorRoslynUtilities.GetFullyQualifiedTypeName(typeSymbol).Replace('.', '_')}.g.cs",
             isPerProject: isPerProject,
             methods: generatedMethods,
             targetFactoryMethods: generatedTargetFactories,
@@ -248,10 +243,10 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
                 ? string.Empty
                 : typeSymbol.ContainingNamespace.ToDisplayString(),
             typeName: typeSymbol.Name,
-            typeAccessibility: GetAccessibility(typeSymbol.DeclaredAccessibility),
+            typeAccessibility: GeneratorRoslynUtilities.GetAccessibility(typeSymbol.DeclaredAccessibility),
             factoryName: $"{typeSymbol.Name}Factory",
-            fullyQualifiedTypeName: GetFullyQualifiedTypeName(typeSymbol),
-            hintName: $"Hakaze.Build.Generator.{GetFullyQualifiedTypeName(typeSymbol).Replace('.', '_')}.g.cs",
+            fullyQualifiedTypeName: GeneratorRoslynUtilities.GetFullyQualifiedTypeName(typeSymbol),
+            hintName: $"Hakaze.Build.Generator.{GeneratorRoslynUtilities.GetFullyQualifiedTypeName(typeSymbol).Replace('.', '_')}.g.cs",
             isPerProject: false,
             methods: [],
             targetFactoryMethods: [],
@@ -287,7 +282,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
         }
 
         var targetSourceAttribute = methodSymbol.GetAttributes()
-            .FirstOrDefault(static attribute => IsAttribute(attribute, TargetSourceAttributeMetadataName));
+            .FirstOrDefault(static attribute => GeneratorRoslynUtilities.IsAttribute(attribute, TargetSourceAttributeMetadataName));
         if (targetSourceAttribute is not null)
         {
             builder.TargetSourceResolverName = targetSourceAttribute.ConstructorArguments.FirstOrDefault().Value as string;
@@ -324,7 +319,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
                 hasEvaluatedBuildingParameter = true;
                 builder.Parameters.Add(new TargetParameterModel(
                     parameter.Name,
-                    parameter.Type.ToDisplayString(FullyQualifiedTypeFormat),
+                    parameter.Type.ToDisplayString(GeneratorRoslynUtilities.FullyQualifiedTypeFormat),
                     TargetParameterKind.EvaluatedBuilding,
                     null));
                 continue;
@@ -345,7 +340,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
                 hasCollectedExecutionResultsParameter = true;
                 builder.Parameters.Add(new TargetParameterModel(
                     parameter.Name,
-                    parameter.Type.ToDisplayString(FullyQualifiedTypeFormat),
+                    parameter.Type.ToDisplayString(GeneratorRoslynUtilities.FullyQualifiedTypeFormat),
                     TargetParameterKind.CollectedExecutionResults,
                     null));
                 continue;
@@ -366,14 +361,14 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
                 hasCancellationTokenParameter = true;
                 builder.Parameters.Add(new TargetParameterModel(
                     parameter.Name,
-                    parameter.Type.ToDisplayString(FullyQualifiedTypeFormat),
+                    parameter.Type.ToDisplayString(GeneratorRoslynUtilities.FullyQualifiedTypeFormat),
                     TargetParameterKind.CancellationToken,
                     null));
                 continue;
             }
 
             var retrievalAttributes = parameter.GetAttributes()
-                .Where(static attribute => IsAttribute(attribute, RetrievalAttributeMetadataName))
+                .Where(static attribute => GeneratorRoslynUtilities.IsAttribute(attribute, RetrievalAttributeMetadataName))
                 .ToImmutableArray();
 
             if (retrievalAttributes.Length > 1)
@@ -399,13 +394,13 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             var retrievalTargetName = retrievalAttributes[0].ConstructorArguments[0].Value as string;
             builder.Parameters.Add(new TargetParameterModel(
                 parameter.Name,
-                parameter.Type.ToDisplayString(FullyQualifiedTypeFormat),
+                parameter.Type.ToDisplayString(GeneratorRoslynUtilities.FullyQualifiedTypeFormat),
                 TargetParameterKind.Retrieval,
                 retrievalTargetName));
             builder.UnknownReferenceCandidates.Add(new TargetReferenceModel(retrievalTargetName ?? string.Empty, location));
         }
 
-        foreach (var attribute in methodSymbol.GetAttributes().Where(static attribute => IsAttribute(attribute, DependOnAttributeMetadataName)))
+        foreach (var attribute in methodSymbol.GetAttributes().Where(static attribute => GeneratorRoslynUtilities.IsAttribute(attribute, DependOnAttributeMetadataName)))
         {
             foreach (var constructorArgument in attribute.ConstructorArguments)
             {
@@ -441,7 +436,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
     {
         var builder = new TargetFactoryMethodBuilder(methodSymbol.Name, methodSymbol.Locations[0]);
         var targetFactoryAttribute = methodSymbol.GetAttributes()
-            .FirstOrDefault(static attribute => IsAttribute(attribute, TargetFactoryAttributeMetadataName));
+            .FirstOrDefault(static attribute => GeneratorRoslynUtilities.IsAttribute(attribute, TargetFactoryAttributeMetadataName));
         builder.HelperTargetName = targetFactoryAttribute?.ConstructorArguments.FirstOrDefault().Value as string;
         var hasBuildingParameter = false;
         var hasCancellationTokenParameter = false;
@@ -483,7 +478,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
                 hasBuildingParameter = true;
                 builder.Parameters.Add(new TargetFactoryParameterModel(
                     parameter.Name,
-                    parameter.Type.ToDisplayString(FullyQualifiedTypeFormat),
+                    parameter.Type.ToDisplayString(GeneratorRoslynUtilities.FullyQualifiedTypeFormat),
                     TargetFactoryParameterKind.Building));
                 continue;
             }
@@ -503,7 +498,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
                 hasCancellationTokenParameter = true;
                 builder.Parameters.Add(new TargetFactoryParameterModel(
                     parameter.Name,
-                    parameter.Type.ToDisplayString(FullyQualifiedTypeFormat),
+                    parameter.Type.ToDisplayString(GeneratorRoslynUtilities.FullyQualifiedTypeFormat),
                     TargetFactoryParameterKind.CancellationToken));
                 continue;
             }
@@ -538,9 +533,9 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
         foreach (var method in model.Methods)
         {
             sourceBuilder.Append("    public const string ").Append(method.Name).Append("Name = \"")
-                .Append(EscapeStringLiteral(model.FullyQualifiedTypeName))
+                .Append(CSharpStringLiteral.Escape(model.FullyQualifiedTypeName))
                 .Append('.')
-                .Append(EscapeStringLiteral(method.MethodName))
+                .Append(CSharpStringLiteral.Escape(method.MethodName))
                 .AppendLine("\";");
             sourceBuilder.Append("    public static global::Hakaze.Build.Abstractions.TargetName ").Append(method.Name).Append("Id => new(").Append(method.Name).AppendLine("Name);");
             sourceBuilder.AppendLine();
@@ -556,9 +551,9 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             var helperTargetName = targetFactoryMethod.HelperTargetName!;
 
             sourceBuilder.Append("    public const string ").Append(helperTargetName).Append("Name = \"")
-                .Append(EscapeStringLiteral(model.FullyQualifiedTypeName))
+                .Append(CSharpStringLiteral.Escape(model.FullyQualifiedTypeName))
                 .Append('.')
-                .Append(EscapeStringLiteral(helperTargetName))
+                .Append(CSharpStringLiteral.Escape(helperTargetName))
                 .AppendLine("\";");
             sourceBuilder.Append("    public static global::Hakaze.Build.Abstractions.TargetName ").Append(helperTargetName).Append("Id => new(")
                 .Append(helperTargetName).AppendLine("Name);");
@@ -1148,43 +1143,6 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
                namedType.TypeArguments.Length == 2 &&
                IsType(namedType.TypeArguments[0], "Hakaze.Build.Abstractions", "TargetId") &&
                namedType.TypeArguments[1].SpecialType == SpecialType.System_Object;
-    }
-
-    private static bool HasAttribute(ImmutableArray<AttributeData> attributes, string attributeMetadataName)
-    {
-        return attributes.Any(attribute => IsAttribute(attribute, attributeMetadataName));
-    }
-
-    private static bool IsAttribute(AttributeData attribute, string attributeMetadataName)
-    {
-        return attribute.AttributeClass?.ToDisplayString() == attributeMetadataName;
-    }
-
-    private static string GetAccessibility(Accessibility accessibility)
-    {
-        return accessibility switch
-        {
-            Accessibility.Public => "public",
-            Accessibility.Internal => "internal",
-            _ => "internal"
-        };
-    }
-
-    private static string GetTypeDisplayName(INamedTypeSymbol typeSymbol)
-    {
-        return typeSymbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
-    }
-
-    private static string GetFullyQualifiedTypeName(INamedTypeSymbol typeSymbol)
-    {
-        return typeSymbol.ContainingNamespace.IsGlobalNamespace
-            ? typeSymbol.Name
-            : $"{typeSymbol.ContainingNamespace.ToDisplayString()}.{typeSymbol.Name}";
-    }
-
-    private static string EscapeStringLiteral(string value)
-    {
-        return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
     }
 
     private static string GetTargetSourceExpression(TargetMethodModel method)

@@ -39,7 +39,7 @@
 
     <PropertyGroup Condition="'$(MSBuildProjectName.EndsWith(`.Tests`))' != 'true'">
         <IsPackable>true</IsPackable>
-        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <GenerateDocumentationFile>false</GenerateDocumentationFile>
         <OutputType Condition="'$(MSBuildProjectName.EndsWith(`.Cli`))' != 'true'">Library</OutputType>
         <OutputType Condition="'$(MSBuildProjectName.EndsWith(`.Cli`))' == 'true'">Exe</OutputType>
     </PropertyGroup>

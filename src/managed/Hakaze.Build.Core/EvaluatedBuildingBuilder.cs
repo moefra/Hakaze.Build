@@ -62,6 +62,14 @@ public sealed class EvaluatedBuildingBuilder
         return this;
     }
 
+    public EvaluatedBuildingBuilder AddTarget(Action<TargetBuilder> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var builder = new TargetBuilder();
+        configure(builder);
+        return AddTarget(builder.Build());
+    }
+
     public EvaluatedBuilding Build()
     {
         var projects = _projects.ToImmutableArray();

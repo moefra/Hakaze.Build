@@ -14,7 +14,7 @@ public class EvaluatedBuildingBuilderTests
                     .Build();
         var projectId = new ProjectId("/workspace/app");
         var target = new TestTarget(
-            new TargetId(projectId, config.Id, new TargetName("Compile"), new TargetSource("Program.cs")));
+            new TargetId(projectId, null, new TargetName("Compile"), new TargetSource("Program.cs")));
 
         var building = new EvaluatedBuildingBuilder()
                       .WithProfile(static profile => profile.WithName("Debug"))
@@ -78,7 +78,7 @@ public class EvaluatedBuildingBuilderTests
     {
         var config = new ConfigBuilder().Build();
         var projectId = new ProjectId("/workspace/app");
-        var targetId = new TargetId(projectId, config.Id, new TargetName("Compile"), new TargetSource("Program.cs"));
+        var targetId = new TargetId(projectId, null, new TargetName("Compile"), new TargetSource("Program.cs"));
 
         var builder = new EvaluatedBuildingBuilder()
                      .WithProfile(new ProfileBuilder().WithName("Debug").Build())
@@ -90,6 +90,63 @@ public class EvaluatedBuildingBuilderTests
 
         await Assert.That(action).ThrowsException()
             .WithMessage("Duplicate target ids are not allowed.");
+    }
+
+    [Test]
+    public async Task EvaluatedBuildingBuilder_AddTarget_WithBuilder_AddsBuiltTarget()
+    {
+        var config = new ConfigBuilder().Build();
+        var targetId = new TargetId(null, null, new TargetName("Compile"), null);
+
+        var building = new EvaluatedBuildingBuilder()
+                     .WithProfile(new ProfileBuilder().WithName("Debug").Build())
+                     .WithConfig(config)
+                     .AddTarget(target => target
+                         .WithId(targetId)
+                         .WithExecute(static (_, _, _) => Task.FromResult<ExecutionResult>(new SuccessfulExecution("ok"))))
+                     .Build();
+
+        await Assert.That(building.Targets.Count).IsEqualTo(1);
+        await Assert.That(building.Targets.ContainsKey(targetId)).IsTrue();
+        await Assert.That(building.Targets[targetId]).IsTypeOf<Target>();
+    }
+
+    [Test]
+    public async Task EvaluatedBuildingBuilder_AddTarget_WithBuilder_StillRejectsDuplicateIds()
+    {
+        var config = new ConfigBuilder().Build();
+        var targetId = new TargetId(null, null, new TargetName("Compile"), null);
+
+        var builder = new EvaluatedBuildingBuilder()
+                     .WithProfile(new ProfileBuilder().WithName("Debug").Build())
+                     .WithConfig(config)
+                     .AddTarget(target => target
+                         .WithId(targetId)
+                         .WithExecute(static (_, _, _) => Task.FromResult<ExecutionResult>(new SuccessfulExecution("first"))))
+                     .AddTarget(target => target
+                         .WithId(targetId)
+                         .WithExecute(static (_, _, _) => Task.FromResult<ExecutionResult>(new SuccessfulExecution("second"))));
+
+        Action action = () => _ = builder.Build();
+
+        await Assert.That(action).ThrowsException()
+            .WithMessage("Duplicate target ids are not allowed.");
+    }
+
+    [Test]
+    public async Task EvaluatedBuildingBuilder_Build_AllowsNullProjectConfigAndSourceInTargetId()
+    {
+        var config = new ConfigBuilder().Build();
+        var targetId = new TargetId(null, null, new TargetName("Compile"), null);
+        var target = new TestTarget(targetId);
+
+        var building = new EvaluatedBuildingBuilder()
+                     .WithProfile(new ProfileBuilder().WithName("Debug").Build())
+                     .WithConfig(config)
+                     .AddTarget(target)
+                     .Build();
+
+        await Assert.That(building.Targets[targetId]).IsSameReferenceAs(target);
     }
 
     private sealed class TestTarget(TargetId id) : ITarget

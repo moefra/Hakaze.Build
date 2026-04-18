@@ -12,8 +12,8 @@ public class EvaluatedBuildExtensionsTests
         var order = new List<string>();
         var config = new ConfigBuilder().Build();
         var projectId = new ProjectId("/workspace/app");
-        var prepareId = new TargetId(projectId, config.Id, new TargetName("Prepare"), new TargetSource("prepare"));
-        var buildId = new TargetId(projectId, config.Id, new TargetName("Build"), new TargetSource("build"));
+        var prepareId = new TargetId(projectId, null, new TargetName("Prepare"), new TargetSource("prepare"));
+        var buildId = new TargetId(projectId, null, new TargetName("Build"), new TargetSource("build"));
 
         var building = new EvaluatedBuildingBuilder()
                       .WithProfile(new ProfileBuilder().WithName("Debug").Build())
@@ -47,10 +47,10 @@ public class EvaluatedBuildExtensionsTests
         var count = 0;
         var config = new ConfigBuilder().Build();
         var projectId = new ProjectId("/workspace/app");
-        var prepareId = new TargetId(projectId, config.Id, new TargetName("Prepare"), new TargetSource("prepare"));
-        var leftId = new TargetId(projectId, config.Id, new TargetName("Left"), new TargetSource("left"));
-        var rightId = new TargetId(projectId, config.Id, new TargetName("Right"), new TargetSource("right"));
-        var rootId = new TargetId(projectId, config.Id, new TargetName("Root"), new TargetSource("root"));
+        var prepareId = new TargetId(projectId, null, new TargetName("Prepare"), new TargetSource("prepare"));
+        var leftId = new TargetId(projectId, null, new TargetName("Left"), new TargetSource("left"));
+        var rightId = new TargetId(projectId, null, new TargetName("Right"), new TargetSource("right"));
+        var rootId = new TargetId(projectId, null, new TargetName("Root"), new TargetSource("root"));
 
         var building = new EvaluatedBuildingBuilder()
                       .WithProfile(new ProfileBuilder().WithName("Debug").Build())
@@ -85,8 +85,8 @@ public class EvaluatedBuildExtensionsTests
         var targetRan = false;
         var config = new ConfigBuilder().Build();
         var projectId = new ProjectId("/workspace/app");
-        var prepareId = new TargetId(projectId, config.Id, new TargetName("Prepare"), new TargetSource("prepare"));
-        var buildId = new TargetId(projectId, config.Id, new TargetName("Build"), new TargetSource("build"));
+        var prepareId = new TargetId(projectId, null, new TargetName("Prepare"), new TargetSource("prepare"));
+        var buildId = new TargetId(projectId, null, new TargetName("Build"), new TargetSource("build"));
 
         var failure = new FailedExecution("prepare failed", null);
         var building = new EvaluatedBuildingBuilder()
@@ -112,8 +112,8 @@ public class EvaluatedBuildExtensionsTests
         object? dependencyValue = "unset";
         var config = new ConfigBuilder().Build();
         var projectId = new ProjectId("/workspace/app");
-        var prepareId = new TargetId(projectId, config.Id, new TargetName("Prepare"), new TargetSource("prepare"));
-        var buildId = new TargetId(projectId, config.Id, new TargetName("Build"), new TargetSource("build"));
+        var prepareId = new TargetId(projectId, null, new TargetName("Prepare"), new TargetSource("prepare"));
+        var buildId = new TargetId(projectId, null, new TargetName("Build"), new TargetSource("build"));
 
         var building = new EvaluatedBuildingBuilder()
                       .WithProfile(new ProfileBuilder().WithName("Debug").Build())
@@ -137,7 +137,7 @@ public class EvaluatedBuildExtensionsTests
         var config = new ConfigBuilder().Build();
         var missingId = new TargetId(
             new ProjectId("/workspace/app"),
-            config.Id,
+            null,
             new TargetName("Missing"),
             new TargetSource("missing"));
         var building = new EvaluatedBuildingBuilder()
@@ -156,8 +156,8 @@ public class EvaluatedBuildExtensionsTests
     {
         var config = new ConfigBuilder().Build();
         var projectId = new ProjectId("/workspace/app");
-        var firstId = new TargetId(projectId, config.Id, new TargetName("First"), new TargetSource("first"));
-        var secondId = new TargetId(projectId, config.Id, new TargetName("Second"), new TargetSource("second"));
+        var firstId = new TargetId(projectId, null, new TargetName("First"), new TargetSource("first"));
+        var secondId = new TargetId(projectId, null, new TargetName("Second"), new TargetSource("second"));
 
         var building = new EvaluatedBuildingBuilder()
                       .WithProfile(new ProfileBuilder().WithName("Debug").Build())
@@ -170,6 +170,58 @@ public class EvaluatedBuildExtensionsTests
 
         await Assert.That(action).ThrowsException()
             .WithMessage($"Cyclic target dependency detected for '{firstId}'.");
+    }
+
+    [Test]
+    public async Task Execute_WorksWhenTargetIdsUseNullProjectAndSource()
+    {
+        var config = new ConfigBuilder().Build();
+        var prepareId = new TargetId(null, null, new TargetName("Prepare"), null);
+        var buildId = new TargetId(null, null, new TargetName("Build"), null);
+
+        var building = new EvaluatedBuildingBuilder()
+                      .WithProfile(new ProfileBuilder().WithName("Debug").Build())
+                      .WithConfig(config)
+                      .AddTarget(new RecordingTarget(prepareId, [], (_, _, _) =>
+                          new SuccessfulExecutionWithResult<string>("prepared", "prepare-value")))
+                      .AddTarget(new RecordingTarget(buildId, [prepareId], (_, results, _) =>
+                          results[prepareId] as string == "prepare-value"
+                              ? new SuccessfulExecution("built")
+                              : throw new InvalidOperationException("Missing dependency value.")))
+                      .Build();
+
+        var result = await building.Execute(buildId);
+
+        await Assert.That(result).IsTypeOf<SuccessfulExecution>();
+    }
+
+    [Test]
+    public async Task Execute_WorksWithTargetsBuiltFromTargetBuilder()
+    {
+        var config = new ConfigBuilder().Build();
+        var prepareId = new TargetId(null, null, new TargetName("Prepare"), null);
+        var buildId = new TargetId(null, null, new TargetName("Build"), null);
+
+        var building = new EvaluatedBuildingBuilder()
+                      .WithProfile(new ProfileBuilder().WithName("Debug").Build())
+                      .WithConfig(config)
+                      .AddTarget(target => target
+                          .WithId(prepareId)
+                          .WithExecute(static (_, _, _) => Task.FromResult<ExecutionResult>(
+                              new SuccessfulExecutionWithResult<string>("prepared", "prepare-value"))))
+                      .AddTarget(target => target
+                          .WithId(buildId)
+                          .AddRequiredPreparation(prepareId)
+                          .WithExecute((_, results, _) =>
+                              Task.FromResult<ExecutionResult>(
+                                  results[prepareId] as string == "prepare-value"
+                                      ? new SuccessfulExecution("built")
+                                      : throw new InvalidOperationException("Missing dependency value."))))
+                      .Build();
+
+        var result = await building.Execute(buildId);
+
+        await Assert.That(result).IsTypeOf<SuccessfulExecution>();
     }
 
     private sealed class RecordingTarget(

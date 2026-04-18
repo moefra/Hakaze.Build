@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using Hakaze.Build.Abstractions;
+using Hakaze.Build.Abstractions.Generator;
 
 namespace Hakaze.Build.Generator.Sample;
 
@@ -8,9 +9,8 @@ public sealed record Foo(string Value);
 [ExportTargets]
 public partial class Targets
 {
-    private static partial string GetTargetSourceId(IBuilding building, CancellationToken cancellationToken) => "sample-target-source";
-
     [Target]
+    [TargetSource(nameof(GetCompileSource))]
     public static Task<ExecutionResult> Compile(
         CancellationToken cancellationToken,
         IEvaluatedBuilding building)
@@ -19,11 +19,25 @@ public partial class Targets
             new SuccessfulExecutionWithResult<Foo>("compiled", new Foo(building.Profile.Name)));
     }
 
+    private static string GetCompileSource(IBuilding building, CancellationToken cancellationToken) => $"compile:{building.Profile.Name}:{cancellationToken.CanBeCanceled}";
+
 
     [Target]
     public static Task<ExecutionResult> Nop()
     {
         return Task.FromResult<ExecutionResult>(new SuccessfulExecution("nop"));
+    }
+
+    [TargetFactory("FactoryTarget")]
+    public static ImmutableArray<ITarget> CreateFactoryTargets(IBuilding building, CancellationToken cancellationToken)
+    {
+        var targetId = new TargetId(
+            null,
+            null,
+            FactoryTargetId,
+            new TargetSource($"factory:{building.Profile.Name}:{cancellationToken.CanBeCanceled}"));
+
+        return [new FactoryProvidedTarget(targetId, $"{building.Profile.Name}:{cancellationToken.CanBeCanceled}")];
     }
 
     [Target]
@@ -60,6 +74,22 @@ public partial class Targets
             new SuccessfulExecutionWithResult<string>(
                 "post-compiled-override",
                 $"override:{building.Profile.Name}:{foo.Value}:{collectedExecutionResults.Count}"));
+    }
+}
+
+public sealed class FactoryProvidedTarget(TargetId id, string value) : ITarget
+{
+    public TargetId Id { get; } = id;
+
+    public ImmutableArray<TargetId> RequiredPreparation { get; } = [];
+
+    public Task<ExecutionResult> ExecuteAsync(
+        IEvaluatedBuilding building,
+        ImmutableDictionary<TargetId, object?> collectedExecutionResults,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult<ExecutionResult>(
+            new SuccessfulExecutionWithResult<string>("factory-target", value));
     }
 }
 

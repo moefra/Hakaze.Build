@@ -10,11 +10,13 @@ namespace Hakaze.Build.Generator;
 [Generator(LanguageNames.CSharp)]
 public sealed class TargetExportGenerator : IIncrementalGenerator
 {
-    private const string ExportTargetsAttributeMetadataName = "ExportTargetsAttribute";
-    private const string PerProjectAttributeName = "PerProjectAttribute";
-    private const string TargetAttributeName = "TargetAttribute";
-    private const string DependOnAttributeName = "DependOnAttribute";
-    private const string RetrievalAttributeName = "RetrievalAttribute";
+    private const string ExportTargetsAttributeMetadataName = "Hakaze.Build.Abstractions.Generator.ExportTargetsAttribute";
+    private const string PerProjectAttributeMetadataName = "Hakaze.Build.Abstractions.Generator.PerProjectAttribute";
+    private const string TargetAttributeMetadataName = "Hakaze.Build.Abstractions.Generator.TargetAttribute";
+    private const string TargetFactoryAttributeMetadataName = "Hakaze.Build.Abstractions.Generator.TargetFactoryAttribute";
+    private const string TargetSourceAttributeMetadataName = "Hakaze.Build.Abstractions.Generator.TargetSourceAttribute";
+    private const string DependOnAttributeMetadataName = "Hakaze.Build.Abstractions.Generator.DependOnAttribute";
+    private const string RetrievalAttributeMetadataName = "Hakaze.Build.Abstractions.Generator.RetrievalAttribute";
 
     private static readonly SymbolDisplayFormat FullyQualifiedTypeFormat =
         SymbolDisplayFormat.FullyQualifiedFormat
@@ -24,11 +26,6 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
-        context.RegisterPostInitializationOutput(static postInitializationContext =>
-            postInitializationContext.AddSource(
-                "Hakaze.Build.TargetAttributes.g.cs",
-                SourceText.From(AttributeSource, Encoding.UTF8)));
-
         var exportedTypes = context.SyntaxProvider.ForAttributeWithMetadataName(
                 ExportTargetsAttributeMetadataName,
                 static (node, _) => node is ClassDeclarationSyntax,
@@ -81,11 +78,29 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             return CreateInvalidModel(typeSymbol, diagnostics.ToImmutable());
         }
 
-        var isPerProject = HasAttribute(typeSymbol.GetAttributes(), PerProjectAttributeName);
+        var isPerProject = HasAttribute(typeSymbol.GetAttributes(), PerProjectAttributeMetadataName);
+        foreach (var method in typeSymbol.GetMembers().OfType<IMethodSymbol>().Where(static method => method.MethodKind == MethodKind.Ordinary))
+        {
+            if (HasAttribute(method.GetAttributes(), TargetSourceAttributeMetadataName) &&
+                !HasAttribute(method.GetAttributes(), TargetAttributeMetadataName))
+            {
+                diagnostics.Add(Diagnostic.Create(
+                    TargetExportDiagnostics.TargetSourceAttributeRequiresTargetMethod,
+                    method.Locations[0],
+                    method.Name));
+            }
+        }
+
         var targetMethods = typeSymbol.GetMembers()
             .OfType<IMethodSymbol>()
             .Where(static method => method.MethodKind == MethodKind.Ordinary)
-            .Where(static method => HasAttribute(method.GetAttributes(), TargetAttributeName))
+            .Where(static method => HasAttribute(method.GetAttributes(), TargetAttributeMetadataName))
+            .OrderBy(static method => method.Locations.FirstOrDefault(static location => location.IsInSource)?.SourceSpan.Start ?? int.MaxValue)
+            .ToImmutableArray();
+        var targetFactoryMethods = typeSymbol.GetMembers()
+            .OfType<IMethodSymbol>()
+            .Where(static method => method.MethodKind == MethodKind.Ordinary)
+            .Where(static method => HasAttribute(method.GetAttributes(), TargetFactoryAttributeMetadataName))
             .OrderBy(static method => method.Locations.FirstOrDefault(static location => location.IsInSource)?.SourceSpan.Start ?? int.MaxValue)
             .ToImmutableArray();
 
@@ -93,6 +108,12 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
         foreach (var method in targetMethods)
         {
             methodBuilders.Add(BuildTargetMethod(method, diagnostics));
+        }
+
+        var targetFactoryBuilders = new List<TargetFactoryMethodBuilder>(targetFactoryMethods.Length);
+        foreach (var method in targetFactoryMethods)
+        {
+            targetFactoryBuilders.Add(BuildTargetFactoryMethod(method, diagnostics));
         }
 
         var duplicateTargetNames = methodBuilders
@@ -136,7 +157,70 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             }
         }
 
+        foreach (var method in methodBuilders.Where(static method => method.CanGenerate))
+        {
+            if (method.TargetSourceResolverName is null)
+            {
+                continue;
+            }
+
+            var resolverMethods = typeSymbol.GetMembers(method.TargetSourceResolverName)
+                .OfType<IMethodSymbol>()
+                .Where(static candidate => candidate.MethodKind == MethodKind.Ordinary)
+                .ToImmutableArray();
+
+            if (resolverMethods.Length == 0)
+            {
+                diagnostics.Add(Diagnostic.Create(
+                    TargetExportDiagnostics.UnknownTargetSourceResolver,
+                    method.TargetSourceResolverLocation ?? method.Location,
+                    method.TargetSourceResolverName,
+                    method.MethodName));
+                method.MarkInvalid();
+                continue;
+            }
+
+            if (!resolverMethods.Any(static candidate => candidate.IsStatic))
+            {
+                diagnostics.Add(Diagnostic.Create(
+                    TargetExportDiagnostics.TargetSourceResolverMustBeStatic,
+                    method.TargetSourceResolverLocation ?? method.Location,
+                    method.TargetSourceResolverName,
+                    method.MethodName));
+                method.MarkInvalid();
+                continue;
+            }
+
+            var staticResolvers = resolverMethods.Where(static candidate => candidate.IsStatic).ToImmutableArray();
+            if (!staticResolvers.Any(static candidate => IsType(candidate.ReturnType, "System", "String")))
+            {
+                diagnostics.Add(Diagnostic.Create(
+                    TargetExportDiagnostics.TargetSourceResolverMustReturnString,
+                    method.TargetSourceResolverLocation ?? method.Location,
+                    method.TargetSourceResolverName,
+                    method.MethodName));
+                method.MarkInvalid();
+                continue;
+            }
+
+            var validResolver = staticResolvers.FirstOrDefault(IsTargetSourceResolverSignatureValid);
+            if (validResolver is null)
+            {
+                diagnostics.Add(Diagnostic.Create(
+                    TargetExportDiagnostics.TargetSourceResolverHasInvalidParameters,
+                    method.TargetSourceResolverLocation ?? method.Location,
+                    method.TargetSourceResolverName,
+                    method.MethodName));
+                method.MarkInvalid();
+                continue;
+            }
+        }
+
         var generatedMethods = methodBuilders
+            .Where(static method => method.CanGenerate)
+            .Select(static method => method.Build())
+            .ToImmutableArray();
+        var generatedTargetFactories = targetFactoryBuilders
             .Where(static method => method.CanGenerate)
             .Select(static method => method.Build())
             .ToImmutableArray();
@@ -152,6 +236,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             hintName: $"Hakaze.Build.Generator.{GetFullyQualifiedTypeName(typeSymbol).Replace('.', '_')}.g.cs",
             isPerProject: isPerProject,
             methods: generatedMethods,
+            targetFactoryMethods: generatedTargetFactories,
             diagnostics: diagnostics.ToImmutable(),
             shouldGenerate: true);
     }
@@ -169,6 +254,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             hintName: $"Hakaze.Build.Generator.{GetFullyQualifiedTypeName(typeSymbol).Replace('.', '_')}.g.cs",
             isPerProject: false,
             methods: [],
+            targetFactoryMethods: [],
             diagnostics: diagnostics,
             shouldGenerate: false);
     }
@@ -198,6 +284,14 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
                 methodSymbol.Locations[0],
                 methodSymbol.Name));
             builder.MarkInvalid();
+        }
+
+        var targetSourceAttribute = methodSymbol.GetAttributes()
+            .FirstOrDefault(static attribute => IsAttribute(attribute, TargetSourceAttributeMetadataName));
+        if (targetSourceAttribute is not null)
+        {
+            builder.TargetSourceResolverName = targetSourceAttribute.ConstructorArguments.FirstOrDefault().Value as string;
+            builder.TargetSourceResolverLocation = targetSourceAttribute.ApplicationSyntaxReference?.GetSyntax().GetLocation() ?? methodSymbol.Locations[0];
         }
 
         for (var index = 0; index < methodSymbol.Parameters.Length; index++)
@@ -279,7 +373,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             }
 
             var retrievalAttributes = parameter.GetAttributes()
-                .Where(static attribute => IsAttribute(attribute, RetrievalAttributeName))
+                .Where(static attribute => IsAttribute(attribute, RetrievalAttributeMetadataName))
                 .ToImmutableArray();
 
             if (retrievalAttributes.Length > 1)
@@ -311,7 +405,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             builder.UnknownReferenceCandidates.Add(new TargetReferenceModel(retrievalTargetName ?? string.Empty, location));
         }
 
-        foreach (var attribute in methodSymbol.GetAttributes().Where(static attribute => IsAttribute(attribute, DependOnAttributeName)))
+        foreach (var attribute in methodSymbol.GetAttributes().Where(static attribute => IsAttribute(attribute, DependOnAttributeMetadataName)))
         {
             foreach (var constructorArgument in attribute.ConstructorArguments)
             {
@@ -341,6 +435,90 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
         return builder;
     }
 
+    private static TargetFactoryMethodBuilder BuildTargetFactoryMethod(
+        IMethodSymbol methodSymbol,
+        ImmutableArray<Diagnostic>.Builder diagnostics)
+    {
+        var builder = new TargetFactoryMethodBuilder(methodSymbol.Name, methodSymbol.Locations[0]);
+        var targetFactoryAttribute = methodSymbol.GetAttributes()
+            .FirstOrDefault(static attribute => IsAttribute(attribute, TargetFactoryAttributeMetadataName));
+        builder.HelperTargetName = targetFactoryAttribute?.ConstructorArguments.FirstOrDefault().Value as string;
+        var hasBuildingParameter = false;
+        var hasCancellationTokenParameter = false;
+
+        if (!methodSymbol.IsStatic)
+        {
+            diagnostics.Add(Diagnostic.Create(
+                TargetExportDiagnostics.TargetFactoryMethodMustBeStatic,
+                methodSymbol.Locations[0],
+                methodSymbol.Name));
+            builder.MarkInvalid();
+        }
+
+        if (!ReturnsImmutableArrayOfITarget(methodSymbol.ReturnType))
+        {
+            diagnostics.Add(Diagnostic.Create(
+                TargetExportDiagnostics.TargetFactoryMethodMustReturnImmutableArrayOfITarget,
+                methodSymbol.Locations[0],
+                methodSymbol.Name));
+            builder.MarkInvalid();
+        }
+
+        foreach (var parameter in methodSymbol.Parameters)
+        {
+            var location = parameter.Locations.FirstOrDefault(static candidate => candidate.IsInSource) ?? methodSymbol.Locations[0];
+
+            if (IsType(parameter.Type, "Hakaze.Build.Abstractions", "IBuilding"))
+            {
+                if (hasBuildingParameter)
+                {
+                    diagnostics.Add(Diagnostic.Create(
+                        TargetExportDiagnostics.DuplicateFactoryBuildingParameter,
+                        location,
+                        methodSymbol.Name));
+                    builder.MarkInvalid();
+                    continue;
+                }
+
+                hasBuildingParameter = true;
+                builder.Parameters.Add(new TargetFactoryParameterModel(
+                    parameter.Name,
+                    parameter.Type.ToDisplayString(FullyQualifiedTypeFormat),
+                    TargetFactoryParameterKind.Building));
+                continue;
+            }
+
+            if (IsType(parameter.Type, "System.Threading", "CancellationToken"))
+            {
+                if (hasCancellationTokenParameter)
+                {
+                    diagnostics.Add(Diagnostic.Create(
+                        TargetExportDiagnostics.DuplicateFactoryCancellationTokenParameter,
+                        location,
+                        methodSymbol.Name));
+                    builder.MarkInvalid();
+                    continue;
+                }
+
+                hasCancellationTokenParameter = true;
+                builder.Parameters.Add(new TargetFactoryParameterModel(
+                    parameter.Name,
+                    parameter.Type.ToDisplayString(FullyQualifiedTypeFormat),
+                    TargetFactoryParameterKind.CancellationToken));
+                continue;
+            }
+
+            diagnostics.Add(Diagnostic.Create(
+                TargetExportDiagnostics.UnsupportedTargetFactoryParameter,
+                location,
+                parameter.Name,
+                methodSymbol.Name));
+            builder.MarkInvalid();
+        }
+
+        return builder;
+    }
+
     private static string RenderSource(ExportedTypeModel model)
     {
         var sourceBuilder = new StringBuilder();
@@ -359,8 +537,31 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
 
         foreach (var method in model.Methods)
         {
-            sourceBuilder.Append("    public const string ").Append(method.Name).Append("Name = nameof(").Append(method.Name).AppendLine(");");
+            sourceBuilder.Append("    public const string ").Append(method.Name).Append("Name = \"")
+                .Append(EscapeStringLiteral(model.FullyQualifiedTypeName))
+                .Append('.')
+                .Append(EscapeStringLiteral(method.MethodName))
+                .AppendLine("\";");
             sourceBuilder.Append("    public static global::Hakaze.Build.Abstractions.TargetName ").Append(method.Name).Append("Id => new(").Append(method.Name).AppendLine("Name);");
+            sourceBuilder.AppendLine();
+        }
+
+        foreach (var targetFactoryMethod in model.TargetFactoryMethods)
+        {
+            if (!targetFactoryMethod.HasNamedHelper)
+            {
+                continue;
+            }
+
+            var helperTargetName = targetFactoryMethod.HelperTargetName!;
+
+            sourceBuilder.Append("    public const string ").Append(helperTargetName).Append("Name = \"")
+                .Append(EscapeStringLiteral(model.FullyQualifiedTypeName))
+                .Append('.')
+                .Append(EscapeStringLiteral(helperTargetName))
+                .AppendLine("\";");
+            sourceBuilder.Append("    public static global::Hakaze.Build.Abstractions.TargetName ").Append(helperTargetName).Append("Id => new(")
+                .Append(helperTargetName).AppendLine("Name);");
             sourceBuilder.AppendLine();
         }
 
@@ -374,8 +575,6 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             sourceBuilder.AppendLine();
         }
 
-        sourceBuilder.AppendLine("    private static partial string GetTargetSourceId(global::Hakaze.Build.Abstractions.IBuilding building, global::System.Threading.CancellationToken cancellationToken);");
-        sourceBuilder.AppendLine();
         sourceBuilder.AppendLine("    private static bool TryGetRetrievedValue<T>(");
         sourceBuilder.AppendLine("        global::System.Collections.Immutable.ImmutableDictionary<global::Hakaze.Build.Abstractions.TargetId, object?> collectedExecutionResults,");
         sourceBuilder.AppendLine("        global::Hakaze.Build.Abstractions.TargetId dependencyId,");
@@ -539,7 +738,6 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
         sourceBuilder.AppendLine("    {");
         sourceBuilder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(building);");
         sourceBuilder.AppendLine("        var targets = global::System.Collections.Immutable.ImmutableArray.CreateBuilder<global::Hakaze.Build.Abstractions.ITarget>();");
-        sourceBuilder.AppendLine("        var targetSource = new global::Hakaze.Build.Abstractions.TargetSource(GetTargetSourceId(building, cancellationToken));");
 
         if (model.IsPerProject)
         {
@@ -551,11 +749,11 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
         }
         else
         {
-            sourceBuilder.Append("        var projectId = new global::Hakaze.Build.Abstractions.ProjectId(\"//global/")
-                .Append(EscapeStringLiteral(model.FullyQualifiedTypeName))
-                .AppendLine("\");");
+            sourceBuilder.AppendLine("        global::Hakaze.Build.Abstractions.ProjectId? projectId = null;");
             AppendTargetRegistrationBlock(sourceBuilder, model, "        ");
         }
+
+        AppendTargetFactoryRegistrationBlock(sourceBuilder, model, "        ");
 
         sourceBuilder.AppendLine("        return targets.ToImmutable();");
         sourceBuilder.AppendLine("    }");
@@ -590,8 +788,9 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
     {
         foreach (var method in model.Methods)
         {
-            builder.Append(indentation).Append("var ").Append(method.IdVariableName).Append(" = new global::Hakaze.Build.Abstractions.TargetId(projectId, building.Config.Id, ")
-                .Append(method.Name).AppendLine("Id, targetSource);");
+            builder.Append(indentation).Append("var ").Append(method.IdVariableName).Append(" = ")
+                .Append(method.CreateTargetIdMethodName)
+                .AppendLine("(projectId, building, cancellationToken);");
         }
 
         if (model.Methods.Length > 0)
@@ -625,6 +824,17 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
                 builder.Append(')');
             }
 
+            builder.AppendLine("));");
+        }
+
+    }
+
+    private static void AppendTargetFactoryRegistrationBlock(StringBuilder builder, ExportedTypeModel model, string indentation)
+    {
+        foreach (var factoryMethod in model.TargetFactoryMethods)
+        {
+            builder.Append(indentation).Append("targets.AddRange(").Append(factoryMethod.MethodName).Append('(');
+            AppendTargetFactoryInvocationArguments(builder, factoryMethod.Parameters);
             builder.AppendLine("));");
         }
     }
@@ -694,15 +904,13 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             builder.AppendLine("        global::Hakaze.Build.Abstractions.IEvaluatedBuilding building,");
             builder.AppendLine("        global::System.Threading.CancellationToken cancellationToken)");
             builder.AppendLine("    {");
-            builder.AppendLine("        var targetSource = new global::Hakaze.Build.Abstractions.TargetSource(GetTargetSourceId(building, cancellationToken));");
-            builder.AppendLine("        var expectedConfigId = building.Config.Id;");
             builder.Append("        global::Hakaze.Build.Abstractions.TargetId? matchedTargetId = null;").AppendLine();
             builder.AppendLine();
             builder.AppendLine("        foreach (var targetId in building.Targets.Keys)");
             builder.AppendLine("        {");
-            builder.Append("            if (targetId.ConfigId != expectedConfigId || targetId.Name != ").Append(method.Name).AppendLine("Id || targetId.Source != targetSource)");
+            builder.Append("            if (targetId != ").Append(method.CreateTargetIdMethodName).AppendLine("(targetId.ProjectId, building, cancellationToken))");
             builder.AppendLine("            {");
-            builder.AppendLine("                continue;");
+                builder.AppendLine("                continue;");
             builder.AppendLine("            }");
             builder.AppendLine();
             builder.AppendLine("            if (matchedTargetId is not null)");
@@ -727,11 +935,22 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             builder.AppendLine("        global::Hakaze.Build.Abstractions.TargetId targetId,");
             builder.AppendLine("        global::System.Threading.CancellationToken cancellationToken)");
             builder.AppendLine("    {");
-            builder.AppendLine("        var expectedSource = new global::Hakaze.Build.Abstractions.TargetSource(GetTargetSourceId(building, cancellationToken));");
-            builder.Append("        if (targetId.ConfigId != building.Config.Id || targetId.Name != ").Append(method.Name).AppendLine("Id || targetId.Source != expectedSource)");
+            builder.Append("        if (targetId != ").Append(method.CreateTargetIdMethodName).AppendLine("(targetId.ProjectId, building, cancellationToken))");
             builder.AppendLine("        {");
             builder.Append("            throw new global::System.ArgumentException(\"TargetId does not identify target '").Append(method.Name).AppendLine("' for the current build.\", nameof(targetId));");
             builder.AppendLine("        }");
+            builder.AppendLine("    }");
+            builder.AppendLine();
+            builder.Append("    private static global::Hakaze.Build.Abstractions.TargetId ").Append(method.CreateTargetIdMethodName).AppendLine("(");
+            builder.AppendLine("        global::Hakaze.Build.Abstractions.ProjectId? projectId,");
+            builder.AppendLine("        global::Hakaze.Build.Abstractions.IBuilding building,");
+            builder.AppendLine("        global::System.Threading.CancellationToken cancellationToken)");
+            builder.AppendLine("    {");
+            builder.Append("        return new global::Hakaze.Build.Abstractions.TargetId(projectId, null, ")
+                .Append(method.Name)
+                .Append("Id, ")
+                .Append(GetTargetSourceExpression(method))
+                .AppendLine(");");
             builder.AppendLine("    }");
         }
         else
@@ -754,21 +973,22 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             builder.AppendLine("    {");
             builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(building);");
             builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(implementation);");
-            builder.Append("        var targetId = ").Append(method.CreateTargetIdMethodName).AppendLine("(building, cancellationToken);");
+            builder.Append("        var targetId = ").Append(method.CreateTargetIdMethodName).AppendLine("(null, building, cancellationToken);");
             builder.Append("        return ExecuteGeneratedTargetAsync(building, targetId, cancellationToken, (rootId, collectedExecutionResults, token) => ")
                 .Append(method.InvokeCoreMethodName)
                 .AppendLine("(rootId, building, collectedExecutionResults, token, implementation));");
             builder.AppendLine("    }");
             builder.AppendLine();
             builder.Append("    private static global::Hakaze.Build.Abstractions.TargetId ").Append(method.CreateTargetIdMethodName).AppendLine("(");
+            builder.AppendLine("        global::Hakaze.Build.Abstractions.ProjectId? projectId,");
             builder.AppendLine("        global::Hakaze.Build.Abstractions.IBuilding building,");
             builder.AppendLine("        global::System.Threading.CancellationToken cancellationToken)");
             builder.AppendLine("    {");
-            builder.Append("        return new global::Hakaze.Build.Abstractions.TargetId(new global::Hakaze.Build.Abstractions.ProjectId(\"//global/")
-                .Append(EscapeStringLiteral(model.FullyQualifiedTypeName))
-                .Append("\"), building.Config.Id, ")
+            builder.Append("        return new global::Hakaze.Build.Abstractions.TargetId(projectId, null, ")
                 .Append(method.Name)
-                .AppendLine("Id, new global::Hakaze.Build.Abstractions.TargetSource(GetTargetSourceId(building, cancellationToken)));");
+                .Append("Id, ")
+                .Append(GetTargetSourceExpression(method))
+                .AppendLine(");");
             builder.AppendLine("    }");
         }
     }
@@ -790,9 +1010,9 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
 
         foreach (var parameter in method.Parameters.Where(static parameter => parameter.Kind == TargetParameterKind.Retrieval))
         {
-            builder.Append("        if (!TryGetRetrievedValue<").Append(parameter.TypeName).Append(">(collectedExecutionResults, new global::Hakaze.Build.Abstractions.TargetId(targetId.ProjectId, targetId.ConfigId, ")
-                .Append(parameter.RetrievalTargetName)
-                .AppendLine("Id, targetId.Source), out var ")
+            builder.Append("        if (!TryGetRetrievedValue<").Append(parameter.TypeName).Append(">(collectedExecutionResults, ")
+                .Append(GetCreateTargetIdMethodName(parameter.RetrievalTargetName!))
+                .AppendLine("(targetId.ProjectId, building, cancellationToken), out var ")
                 .Append(parameter.Name)
                 .AppendLine(", out var failure))");
             builder.AppendLine("        {");
@@ -871,6 +1091,24 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
         }
     }
 
+    private static void AppendTargetFactoryInvocationArguments(StringBuilder builder, ImmutableArray<TargetFactoryParameterModel> parameters)
+    {
+        for (var index = 0; index < parameters.Length; index++)
+        {
+            if (index > 0)
+            {
+                builder.Append(", ");
+            }
+
+            builder.Append(parameters[index].Kind switch
+            {
+                TargetFactoryParameterKind.Building => "building",
+                TargetFactoryParameterKind.CancellationToken => "cancellationToken",
+                _ => throw new InvalidOperationException("Unknown target factory parameter kind.")
+            });
+        }
+    }
+
     private static bool ReturnsTaskOfExecutionResult(ITypeSymbol returnType)
     {
         return returnType is INamedTypeSymbol namedType &&
@@ -878,6 +1116,23 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
                namedType.ContainingNamespace.ToDisplayString() == "System.Threading.Tasks" &&
                namedType.TypeArguments.Length == 1 &&
                IsType(namedType.TypeArguments[0], "Hakaze.Build.Abstractions", "ExecutionResult");
+    }
+
+    private static bool ReturnsImmutableArrayOfITarget(ITypeSymbol returnType)
+    {
+        return returnType is INamedTypeSymbol namedType &&
+               namedType.Name == "ImmutableArray" &&
+               namedType.ContainingNamespace.ToDisplayString() == "System.Collections.Immutable" &&
+               namedType.TypeArguments.Length == 1 &&
+               IsType(namedType.TypeArguments[0], "Hakaze.Build.Abstractions", "ITarget");
+    }
+
+    private static bool IsTargetSourceResolverSignatureValid(IMethodSymbol methodSymbol)
+    {
+        return IsType(methodSymbol.ReturnType, "System", "String") &&
+               methodSymbol.Parameters.Length == 2 &&
+               IsType(methodSymbol.Parameters[0].Type, "Hakaze.Build.Abstractions", "IBuilding") &&
+               IsType(methodSymbol.Parameters[1].Type, "System.Threading", "CancellationToken");
     }
 
     private static bool IsType(ITypeSymbol typeSymbol, string @namespace, string name)
@@ -895,15 +1150,14 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
                namedType.TypeArguments[1].SpecialType == SpecialType.System_Object;
     }
 
-    private static bool HasAttribute(ImmutableArray<AttributeData> attributes, string attributeName)
+    private static bool HasAttribute(ImmutableArray<AttributeData> attributes, string attributeMetadataName)
     {
-        return attributes.Any(attribute => IsAttribute(attribute, attributeName));
+        return attributes.Any(attribute => IsAttribute(attribute, attributeMetadataName));
     }
 
-    private static bool IsAttribute(AttributeData attribute, string attributeName)
+    private static bool IsAttribute(AttributeData attribute, string attributeMetadataName)
     {
-        return attribute.AttributeClass?.Name == attributeName &&
-               attribute.AttributeClass.ContainingNamespace.IsGlobalNamespace;
+        return attribute.AttributeClass?.ToDisplayString() == attributeMetadataName;
     }
 
     private static string GetAccessibility(Accessibility accessibility)
@@ -933,52 +1187,22 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
         return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
     }
 
+    private static string GetTargetSourceExpression(TargetMethodModel method)
+    {
+        return method.TargetSourceResolverName is null
+            ? "null"
+            : $"new global::Hakaze.Build.Abstractions.TargetSource({method.TargetSourceResolverName}(building, cancellationToken))";
+    }
+
     private static string GetIdVariableName(string methodName)
     {
         return char.ToLowerInvariant(methodName[0]) + methodName.Substring(1) + "TargetId";
     }
 
-    private const string AttributeSource = """
-// <auto-generated/>
-#nullable enable
-
-[global::System.AttributeUsage(global::System.AttributeTargets.Class, Inherited = false, AllowMultiple = false)]
-public sealed class ExportTargetsAttribute : global::System.Attribute
-{
-}
-
-[global::System.AttributeUsage(global::System.AttributeTargets.Class, Inherited = false, AllowMultiple = false)]
-public sealed class PerProjectAttribute : global::System.Attribute
-{
-}
-
-[global::System.AttributeUsage(global::System.AttributeTargets.Method, Inherited = false, AllowMultiple = false)]
-public sealed class TargetAttribute : global::System.Attribute
-{
-}
-
-[global::System.AttributeUsage(global::System.AttributeTargets.Method, Inherited = false, AllowMultiple = true)]
-public sealed class DependOnAttribute : global::System.Attribute
-{
-    public DependOnAttribute(params string[] targetNames)
+    private static string GetCreateTargetIdMethodName(string methodName)
     {
-        TargetNames = targetNames ?? global::System.Array.Empty<string>();
+        return $"Create{methodName}TargetId";
     }
-
-    public string[] TargetNames { get; }
-}
-
-[global::System.AttributeUsage(global::System.AttributeTargets.Parameter, Inherited = false, AllowMultiple = true)]
-public sealed class RetrievalAttribute : global::System.Attribute
-{
-    public RetrievalAttribute(string targetName)
-    {
-        TargetName = targetName;
-    }
-
-    public string TargetName { get; }
-}
-""";
 
     private sealed class ExportedTypeModel
     {
@@ -991,6 +1215,7 @@ public sealed class RetrievalAttribute : global::System.Attribute
             string hintName,
             bool isPerProject,
             ImmutableArray<TargetMethodModel> methods,
+            ImmutableArray<TargetFactoryMethodModel> targetFactoryMethods,
             ImmutableArray<Diagnostic> diagnostics,
             bool shouldGenerate)
         {
@@ -1002,6 +1227,7 @@ public sealed class RetrievalAttribute : global::System.Attribute
             HintName = hintName;
             IsPerProject = isPerProject;
             Methods = methods;
+            TargetFactoryMethods = targetFactoryMethods;
             Diagnostics = diagnostics;
             ShouldGenerate = shouldGenerate;
         }
@@ -1022,6 +1248,8 @@ public sealed class RetrievalAttribute : global::System.Attribute
 
         public ImmutableArray<TargetMethodModel> Methods { get; }
 
+        public ImmutableArray<TargetFactoryMethodModel> TargetFactoryMethods { get; }
+
         public ImmutableArray<Diagnostic> Diagnostics { get; }
 
         public bool ShouldGenerate { get; }
@@ -1040,6 +1268,10 @@ public sealed class RetrievalAttribute : global::System.Attribute
         public List<string> ExplicitDependencies { get; } = [];
 
         public List<TargetReferenceModel> UnknownReferenceCandidates { get; } = [];
+
+        public string? TargetSourceResolverName { get; set; }
+
+        public Location? TargetSourceResolverLocation { get; set; }
 
         public bool CanGenerate { get; private set; } = true;
 
@@ -1074,6 +1306,7 @@ public sealed class RetrievalAttribute : global::System.Attribute
                 MethodName,
                 $"{MethodName}GeneratedTarget",
                 $"{char.ToLowerInvariant(MethodName[0])}{MethodName.Substring(1)}TargetId",
+                TargetSourceResolverName,
                 Parameters.ToImmutableArray(),
                 ExplicitDependencies.ToImmutableArray(),
                 allDependencies.ToImmutableArray());
@@ -1087,6 +1320,7 @@ public sealed class RetrievalAttribute : global::System.Attribute
             string methodName,
             string wrapperName,
             string idVariableName,
+            string? targetSourceResolverName,
             ImmutableArray<TargetParameterModel> parameters,
             ImmutableArray<string> explicitDependencies,
             ImmutableArray<string> allDependencyNames)
@@ -1095,6 +1329,7 @@ public sealed class RetrievalAttribute : global::System.Attribute
             MethodName = methodName;
             WrapperName = wrapperName;
             IdVariableName = idVariableName;
+            TargetSourceResolverName = targetSourceResolverName;
             Parameters = parameters;
             ExplicitDependencies = explicitDependencies;
             AllDependencyNames = allDependencyNames;
@@ -1108,13 +1343,15 @@ public sealed class RetrievalAttribute : global::System.Attribute
 
         public string IdVariableName { get; }
 
+        public string? TargetSourceResolverName { get; }
+
         public string InvokerDelegateName => $"{MethodName}InvokerDelegate";
 
         public string InvokeMethodName => $"Invoke{MethodName}";
 
         public string InvokeCoreMethodName => $"Invoke{MethodName}Core";
 
-        public string CreateTargetIdMethodName => $"Create{MethodName}TargetId";
+        public string CreateTargetIdMethodName => GetCreateTargetIdMethodName(MethodName);
 
         public string ResolveTargetIdMethodName => $"Resolve{MethodName}TargetId";
 
@@ -1125,6 +1362,53 @@ public sealed class RetrievalAttribute : global::System.Attribute
         public ImmutableArray<string> ExplicitDependencies { get; }
 
         public ImmutableArray<string> AllDependencyNames { get; }
+    }
+
+    private sealed class TargetFactoryMethodBuilder(string methodName, Location location)
+    {
+        public string MethodName { get; } = methodName;
+
+        public Location Location { get; } = location;
+
+        public string? HelperTargetName { get; set; }
+
+        public List<TargetFactoryParameterModel> Parameters { get; } = [];
+
+        public bool CanGenerate { get; private set; } = true;
+
+        public void MarkInvalid()
+        {
+            CanGenerate = false;
+        }
+
+        public TargetFactoryMethodModel Build()
+        {
+            return new TargetFactoryMethodModel(
+                MethodName,
+                HelperTargetName,
+                Parameters.ToImmutableArray());
+        }
+    }
+
+    private sealed class TargetFactoryMethodModel
+    {
+        public TargetFactoryMethodModel(
+            string methodName,
+            string? helperTargetName,
+            ImmutableArray<TargetFactoryParameterModel> parameters)
+        {
+            MethodName = methodName;
+            HelperTargetName = string.IsNullOrWhiteSpace(helperTargetName) ? null : helperTargetName;
+            Parameters = parameters;
+        }
+
+        public string MethodName { get; }
+
+        public string? HelperTargetName { get; }
+
+        public bool HasNamedHelper => HelperTargetName is not null;
+
+        public ImmutableArray<TargetFactoryParameterModel> Parameters { get; }
     }
 
     private sealed class TargetParameterModel
@@ -1150,6 +1434,25 @@ public sealed class RetrievalAttribute : global::System.Attribute
         public string? RetrievalTargetName { get; }
     }
 
+    private sealed class TargetFactoryParameterModel
+    {
+        public TargetFactoryParameterModel(
+            string name,
+            string typeName,
+            TargetFactoryParameterKind kind)
+        {
+            Name = name;
+            TypeName = typeName;
+            Kind = kind;
+        }
+
+        public string Name { get; }
+
+        public string TypeName { get; }
+
+        public TargetFactoryParameterKind Kind { get; }
+    }
+
     private sealed class TargetReferenceModel
     {
         public TargetReferenceModel(string targetName, Location location)
@@ -1168,6 +1471,12 @@ public sealed class RetrievalAttribute : global::System.Attribute
         EvaluatedBuilding,
         CollectedExecutionResults,
         Retrieval,
+        CancellationToken
+    }
+
+    private enum TargetFactoryParameterKind
+    {
+        Building,
         CancellationToken
     }
 }

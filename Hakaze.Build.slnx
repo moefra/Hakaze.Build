@@ -15,6 +15,7 @@
     <Project Path="src/managed/Hakaze.Build.Cli/Hakaze.Build.Cli.csproj" />
     <Project Path="src/managed/Hakaze.Build.Core/Hakaze.Build.Core.csproj" />
     <Project Path="src/managed/Hakaze.Build.Generator/Hakaze.Build.Generator.csproj" />
+    <Project Path="src/managed/Hakaze.Build.IO/Hakaze.Build.IO.csproj" />
     <Project Path="src/managed/Hakaze.Build.Utility/Hakaze.Build.Utility.csproj" />
   </Folder>
   <Folder Name="/tests/">

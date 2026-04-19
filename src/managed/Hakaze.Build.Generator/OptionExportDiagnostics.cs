@@ -53,4 +53,20 @@ internal static class OptionExportDiagnostics
         category: Category,
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor OptionPropertyMustHaveSummaryDocumentation = new(
+        id: "HBG0029",
+        title: "Option members should have XML summary documentation",
+        messageFormat: "Property '{0}' should declare XML documentation with a non-empty <summary> to use [Option].",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor OptionValidatorMustHaveSummaryDocumentation = new(
+        id: "HBG0030",
+        title: "Option validators should have XML summary documentation",
+        messageFormat: "Method '{0}' should declare XML documentation with a non-empty <summary> to use [OptionValidator].",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
 }

@@ -248,7 +248,7 @@ public class TargetExportGeneratorTests
     }
 
     [Test]
-    public void Generate_GlobalTargets_UseNullProjectIdAndSourceByDefault()
+    public async Task Generate_GlobalTargets_UseNullProjectIdAndSourceByDefault()
     {
         var compilation = CreateCompilation("""
             using System.Threading;
@@ -273,13 +273,13 @@ public class TargetExportGeneratorTests
 
         var assembly = LoadAssembly(outputCompilation);
         var targetsType = assembly.GetType("Sample.Nested.Targets") ?? throw new InvalidOperationException("Missing generated target container.");
-        var getTargets = targetsType.GetMethod("GetTargets", BindingFlags.Public | BindingFlags.Static) ?? throw new InvalidOperationException("Missing GetTargets method.");
+        var getTargetsAsync = targetsType.GetMethod("GetTargetsAsync", BindingFlags.Public | BindingFlags.Static) ?? throw new InvalidOperationException("Missing GetTargetsAsync method.");
         var building = new BuildingBuilder()
             .WithProfile(static profile => profile.WithName("Debug"))
             .WithConfig(new ConfigBuilder().Build())
             .Build();
 
-        var targets = (ImmutableArray<ITarget>)getTargets.Invoke(null, [building, CancellationToken.None])!;
+        var targets = await InvokeGeneratedTargetsAsync(getTargetsAsync, building, CancellationToken.None);
         var target = targets.Single();
         if (target.Id.ProjectId is not null)
         {
@@ -377,7 +377,7 @@ public class TargetExportGeneratorTests
     }
 
     [Test]
-    public void Generate_PerProject_ExpandsTargetsForEachProject()
+    public async Task Generate_PerProject_ExpandsTargetsForEachProject()
     {
         var compilation = CreateCompilation("""
             using System.Threading;
@@ -403,7 +403,7 @@ public class TargetExportGeneratorTests
 
         var assembly = LoadAssembly(outputCompilation);
         var targetsType = assembly.GetType("Sample.Targets") ?? throw new InvalidOperationException("Missing generated target container.");
-        var getTargets = targetsType.GetMethod("GetTargets", BindingFlags.Public | BindingFlags.Static) ?? throw new InvalidOperationException("Missing GetTargets method.");
+        var getTargetsAsync = targetsType.GetMethod("GetTargetsAsync", BindingFlags.Public | BindingFlags.Static) ?? throw new InvalidOperationException("Missing GetTargetsAsync method.");
         var building = new BuildingBuilder()
             .WithProfile(static profile => profile.WithName("Release"))
             .WithConfig(new ConfigBuilder().Build())
@@ -411,7 +411,7 @@ public class TargetExportGeneratorTests
             .AddProject(static project => project.WithId(new BuildProjectId("/workspace/app2")))
             .Build();
 
-        var targets = (ImmutableArray<ITarget>)getTargets.Invoke(null, [building, CancellationToken.None])!;
+        var targets = await InvokeGeneratedTargetsAsync(getTargetsAsync, building, CancellationToken.None);
         if (targets.Length != 2)
         {
             throw new InvalidOperationException($"Expected two per-project targets, found {targets.Length}.");
@@ -541,7 +541,7 @@ public class TargetExportGeneratorTests
     }
 
     [Test]
-    public void Generate_TargetFactoryMethods_AreAppendedInDeclarationOrder()
+    public async Task Generate_TargetFactoryMethods_AreAppendedInDeclarationOrder()
     {
         var compilation = CreateCompilation("""
             using System.Collections.Immutable;
@@ -576,27 +576,27 @@ public class TargetExportGeneratorTests
                 }
 
                 [TargetFactory("FactoryZero")]
-                public static ImmutableArray<ITarget> CreateZero()
+                public static Task<ImmutableArray<ITarget>> CreateZeroAsync()
                 {
-                    return [new ManualTarget(
+                    return Task.FromResult<ImmutableArray<ITarget>>([new ManualTarget(
                         new TargetId(
                             null,
                             null,
                             FactoryZeroId,
                             new TargetSource("factory-zero")),
-                        "zero")];
+                        "zero")]);
                 }
 
                 [TargetFactory]
-                public static ImmutableArray<ITarget> CreateFromContext(IBuilding building, CancellationToken cancellationToken)
+                public static Task<ImmutableArray<ITarget>> CreateFromContextAsync(IBuilding building, CancellationToken cancellationToken)
                 {
-                    return [new ManualTarget(
+                    return Task.FromResult<ImmutableArray<ITarget>>([new ManualTarget(
                         new TargetId(
                             null,
                             null,
                             new TargetName("FactoryContext"),
                             new TargetSource($"factory:{building.Profile.Name}:{cancellationToken.CanBeCanceled}")),
-                        $"{building.Profile.Name}:{cancellationToken.CanBeCanceled}")];
+                        $"{building.Profile.Name}:{cancellationToken.CanBeCanceled}")]);
                 }
             }
             """);
@@ -606,13 +606,13 @@ public class TargetExportGeneratorTests
 
         var assembly = LoadAssembly(outputCompilation);
         var targetsType = assembly.GetType("Sample.Targets") ?? throw new InvalidOperationException("Missing generated target container.");
-        var getTargets = targetsType.GetMethod("GetTargets", BindingFlags.Public | BindingFlags.Static) ?? throw new InvalidOperationException("Missing GetTargets method.");
+        var getTargetsAsync = targetsType.GetMethod("GetTargetsAsync", BindingFlags.Public | BindingFlags.Static) ?? throw new InvalidOperationException("Missing GetTargetsAsync method.");
         var building = new BuildingBuilder()
             .WithProfile(static profile => profile.WithName("Release"))
             .WithConfig(new ConfigBuilder().Build())
             .Build();
 
-        var targets = (ImmutableArray<ITarget>)getTargets.Invoke(null, [building, CancellationToken.None])!;
+        var targets = await InvokeGeneratedTargetsAsync(getTargetsAsync, building, CancellationToken.None);
         var targetNames = targets.Select(static target => target.Id.Name.Name).ToImmutableArray();
         if (!targetNames.SequenceEqual(["Sample.Targets.Build", "Sample.Targets.FactoryZero", "FactoryContext"]))
         {
@@ -638,7 +638,7 @@ public class TargetExportGeneratorTests
 
         var evaluatedBuilding = CreateEvaluatedBuilding(building, targets);
         var factoryContextTarget = targets.Single(static target => target.Id.Name.Name == "FactoryContext");
-        var executionResult = evaluatedBuilding.Execute(factoryContextTarget.Id).GetAwaiter().GetResult();
+        var executionResult = await evaluatedBuilding.Execute(factoryContextTarget.Id);
         if (executionResult is not SuccessfulExecutionWithResult<string> success)
         {
             throw new InvalidOperationException($"Expected SuccessfulExecutionWithResult<string>, got {executionResult.GetType().Name}.");
@@ -651,7 +651,7 @@ public class TargetExportGeneratorTests
     }
 
     [Test]
-    public void Generate_TargetFactoryMethods_WorkWithPerProjectExports()
+    public async Task Generate_TargetFactoryMethods_WorkWithPerProjectExports()
     {
         var compilation = CreateCompilation("""
             using System.Collections.Immutable;
@@ -687,7 +687,7 @@ public class TargetExportGeneratorTests
                 }
 
                 [TargetFactory("FactoryProject")]
-                public static ImmutableArray<ITarget> CreateProjectTargets(IBuilding building)
+                public static Task<ImmutableArray<ITarget>> CreateProjectTargetsAsync(IBuilding building)
                 {
                     var builder = ImmutableArray.CreateBuilder<ITarget>();
                     foreach (var project in building.Projects)
@@ -701,7 +701,7 @@ public class TargetExportGeneratorTests
                             project.Id.Path));
                     }
 
-                    return builder.ToImmutable();
+                    return Task.FromResult(builder.ToImmutable());
                 }
             }
             """);
@@ -711,7 +711,7 @@ public class TargetExportGeneratorTests
 
         var assembly = LoadAssembly(outputCompilation);
         var targetsType = assembly.GetType("Sample.Targets") ?? throw new InvalidOperationException("Missing generated target container.");
-        var getTargets = targetsType.GetMethod("GetTargets", BindingFlags.Public | BindingFlags.Static) ?? throw new InvalidOperationException("Missing GetTargets method.");
+        var getTargetsAsync = targetsType.GetMethod("GetTargetsAsync", BindingFlags.Public | BindingFlags.Static) ?? throw new InvalidOperationException("Missing GetTargetsAsync method.");
         var building = new BuildingBuilder()
             .WithProfile(static profile => profile.WithName("Release"))
             .WithConfig(new ConfigBuilder().Build())
@@ -719,7 +719,7 @@ public class TargetExportGeneratorTests
             .AddProject(static project => project.WithId(new BuildProjectId("/workspace/app2")))
             .Build();
 
-        var targets = (ImmutableArray<ITarget>)getTargets.Invoke(null, [building, CancellationToken.None])!;
+        var targets = await InvokeGeneratedTargetsAsync(getTargetsAsync, building, CancellationToken.None);
         if (targets.Length != 4)
         {
             throw new InvalidOperationException($"Expected four targets after appending per-project factory targets, found {targets.Length}.");
@@ -755,6 +755,7 @@ public class TargetExportGeneratorTests
     {
         var compilation = CreateCompilation("""
             using System.Collections.Immutable;
+            using System.Threading.Tasks;
             using Hakaze.Build.Abstractions;
 
             namespace Sample;
@@ -763,15 +764,15 @@ public class TargetExportGeneratorTests
             public partial class Targets
             {
                 [TargetFactory("FactoryTarget")]
-                public static ImmutableArray<ITarget> CreateNamed()
+                public static Task<ImmutableArray<ITarget>> CreateNamedAsync()
                 {
-                    return [];
+                    return Task.FromResult(ImmutableArray<ITarget>.Empty);
                 }
 
                 [TargetFactory]
-                public static ImmutableArray<ITarget> CreateUnnamed()
+                public static Task<ImmutableArray<ITarget>> CreateUnnamedAsync()
                 {
-                    return [];
+                    return Task.FromResult(ImmutableArray<ITarget>.Empty);
                 }
             }
             """);
@@ -787,9 +788,96 @@ public class TargetExportGeneratorTests
             throw new InvalidOperationException($"Expected generated helper name 'Sample.Targets.FactoryTarget', got '{namedHelper}'.");
         }
 
-        if (targetsType.GetField("CreateUnnamedName", BindingFlags.Public | BindingFlags.Static) is not null)
+        if (targetsType.GetField("CreateUnnamedAsyncName", BindingFlags.Public | BindingFlags.Static) is not null)
         {
             throw new InvalidOperationException("Did not expect unnamed target factory to generate helper members.");
+        }
+    }
+
+    [Test]
+    public async Task Generate_ExportTargetsType_ImplementsInterfaceAndSupportsGenericStaticAccess()
+    {
+        var compilation = CreateCompilation("""
+            using System.Collections.Immutable;
+            using System.Threading;
+            using System.Threading.Tasks;
+            using Hakaze.Build.Abstractions;
+
+            namespace Sample;
+
+            [ExportTargets]
+            public partial class Targets
+            {
+                [Target]
+                public static Task<ExecutionResult> Compile(IEvaluatedBuilding building)
+                {
+                    return Task.FromResult<ExecutionResult>(
+                        new SuccessfulExecutionWithResult<string>("compiled", building.Profile.Name));
+                }
+            }
+
+            public static class GenericTargets
+            {
+                public static Task<ImmutableArray<ITarget>> Load<T>(IBuilding building, CancellationToken cancellationToken = default)
+                    where T : IExportTargets
+                {
+                    return T.GetTargetsAsync(building, cancellationToken);
+                }
+            }
+            """);
+
+        _ = RunGenerator(compilation, out var outputCompilation);
+        AssertNoErrors(outputCompilation);
+
+        var assembly = LoadAssembly(outputCompilation);
+        var targetsType = assembly.GetType("Sample.Targets")!;
+        AssertImplementsInterface(targetsType, "Hakaze.Build.Abstractions.Generator.IExportTargets");
+
+        var building = new BuildingBuilder()
+            .WithProfile(static profile => profile.WithName("Debug"))
+            .WithConfig(new ConfigBuilder().Build())
+            .Build();
+
+        var helperType = assembly.GetType("Sample.GenericTargets")!;
+        var targets = await InvokeGenericTargetsAsync(helperType, "Load", targetsType, building, CancellationToken.None);
+        if (targets.Length != 1)
+        {
+            throw new InvalidOperationException($"Expected a single target from generic interface-based loading, found {targets.Length}.");
+        }
+
+        if (targets[0].Id.Name.Name != "Sample.Targets.Compile")
+        {
+            throw new InvalidOperationException($"Expected generic interface-based loading to return 'Sample.Targets.Compile', got '{targets[0].Id.Name.Name}'.");
+        }
+    }
+
+    [Test]
+    public void Generate_DoesNotDuplicateExplicitIExportTargetsImplementation()
+    {
+        var compilation = CreateCompilation("""
+            using System.Threading.Tasks;
+            using Hakaze.Build.Abstractions;
+
+            namespace Sample;
+
+            [ExportTargets]
+            public partial class Targets : IExportTargets
+            {
+                [Target]
+                public static Task<ExecutionResult> Compile()
+                {
+                    return Task.FromResult<ExecutionResult>(new SuccessfulExecution("compiled"));
+                }
+            }
+            """);
+
+        var result = RunGenerator(compilation, out var outputCompilation);
+        AssertNoErrors(outputCompilation);
+
+        var generatedSource = GetGeneratedSourceText(result);
+        if (generatedSource.Contains(": global::Hakaze.Build.Abstractions.Generator.IExportTargets", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Expected generator not to repeat an explicitly implemented IExportTargets interface.");
         }
     }
 
@@ -1156,15 +1244,16 @@ public class TargetExportGeneratorTests
     {
         var compilation = CreateCompilation("""
             using System.Collections.Immutable;
+            using System.Threading.Tasks;
             using Hakaze.Build.Abstractions;
 
             [ExportTargets]
             public partial class Targets
             {
                 [TargetFactory]
-                public ImmutableArray<ITarget> CreateTargets()
+                public Task<ImmutableArray<ITarget>> CreateTargetsAsync()
                 {
-                    return [];
+                    return Task.FromResult(ImmutableArray<ITarget>.Empty);
                 }
             }
             """);
@@ -1177,15 +1266,16 @@ public class TargetExportGeneratorTests
     public void Generate_DiagnosticWhenTargetFactoryMethodHasWrongReturnType()
     {
         var compilation = CreateCompilation("""
+            using System.Threading.Tasks;
             using Hakaze.Build.Abstractions;
 
             [ExportTargets]
             public partial class Targets
             {
                 [TargetFactory]
-                public static ITarget[] CreateTargets()
+                public static Task<ITarget[]> CreateTargetsAsync()
                 {
-                    return [];
+                    return Task.FromResult<ITarget[]>([]);
                 }
             }
             """);
@@ -1199,15 +1289,16 @@ public class TargetExportGeneratorTests
     {
         var compilation = CreateCompilation("""
             using System.Collections.Immutable;
+            using System.Threading.Tasks;
             using Hakaze.Build.Abstractions;
 
             [ExportTargets]
             public partial class Targets
             {
                 [TargetFactory]
-                public static ImmutableArray<ITarget> CreateTargets(IBuilding first, IBuilding second)
+                public static Task<ImmutableArray<ITarget>> CreateTargetsAsync(IBuilding first, IBuilding second)
                 {
-                    return [];
+                    return Task.FromResult(ImmutableArray<ITarget>.Empty);
                 }
             }
             """);
@@ -1222,15 +1313,16 @@ public class TargetExportGeneratorTests
         var compilation = CreateCompilation("""
             using System.Collections.Immutable;
             using System.Threading;
+            using System.Threading.Tasks;
             using Hakaze.Build.Abstractions;
 
             [ExportTargets]
             public partial class Targets
             {
                 [TargetFactory]
-                public static ImmutableArray<ITarget> CreateTargets(CancellationToken first, CancellationToken second)
+                public static Task<ImmutableArray<ITarget>> CreateTargetsAsync(CancellationToken first, CancellationToken second)
                 {
-                    return [];
+                    return Task.FromResult(ImmutableArray<ITarget>.Empty);
                 }
             }
             """);
@@ -1244,15 +1336,16 @@ public class TargetExportGeneratorTests
     {
         var compilation = CreateCompilation("""
             using System.Collections.Immutable;
+            using System.Threading.Tasks;
             using Hakaze.Build.Abstractions;
 
             [ExportTargets]
             public partial class Targets
             {
                 [TargetFactory]
-                public static ImmutableArray<ITarget> CreateTargets(string value)
+                public static Task<ImmutableArray<ITarget>> CreateTargetsAsync(string value)
                 {
-                    return [];
+                    return Task.FromResult(ImmutableArray<ITarget>.Empty);
                 }
             }
             """);
@@ -1380,6 +1473,36 @@ public class TargetExportGeneratorTests
         return await task;
     }
 
+    private static async Task<ImmutableArray<ITarget>> InvokeGeneratedTargetsAsync(MethodInfo getTargetsAsyncMethod, IBuilding building, CancellationToken cancellationToken)
+    {
+        var task = (Task<ImmutableArray<ITarget>>?)getTargetsAsyncMethod.Invoke(null, [building, cancellationToken]);
+        if (task is null)
+        {
+            throw new InvalidOperationException("Generated method 'GetTargetsAsync' did not return Task<ImmutableArray<ITarget>>.");
+        }
+
+        return await task;
+    }
+
+    private static async Task<ImmutableArray<ITarget>> InvokeGenericTargetsAsync(
+        Type helperType,
+        string methodName,
+        Type genericTypeArgument,
+        IBuilding building,
+        CancellationToken cancellationToken)
+    {
+        var method = helperType.GetMethod(methodName, BindingFlags.Public | BindingFlags.Static)
+            ?? throw new InvalidOperationException($"Missing helper method '{methodName}'.");
+        var task = (Task<ImmutableArray<ITarget>>?)method.MakeGenericMethod(genericTypeArgument)
+            .Invoke(null, [building, cancellationToken]);
+        if (task is null)
+        {
+            throw new InvalidOperationException($"Helper method '{methodName}' did not return Task<ImmutableArray<ITarget>>.");
+        }
+
+        return await task;
+    }
+
     private static void AssertNoErrors(Compilation compilation)
     {
         var diagnostics = compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error).ToImmutableArray();
@@ -1411,5 +1534,26 @@ public class TargetExportGeneratorTests
         {
             throw new InvalidOperationException($"Expected {expectedCount} generated source file(s), found {generatedSources.Length}.");
         }
+    }
+
+    private static void AssertImplementsInterface(Type type, string interfaceFullName)
+    {
+        if (type.GetInterfaces().Any(interfaceType => string.Equals(interfaceType.FullName, interfaceFullName, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException($"Expected type '{type.FullName}' to implement '{interfaceFullName}'.");
+    }
+
+    private static string GetGeneratedSourceText(GeneratorDriverRunResult result)
+    {
+        var generatedSource = result.Results.SelectMany(static runResult => runResult.GeneratedSources).SingleOrDefault();
+        if (generatedSource.SourceText is not null)
+        {
+            return generatedSource.SourceText.ToString();
+        }
+
+        throw new InvalidOperationException("Expected exactly one generated source file.");
     }
 }

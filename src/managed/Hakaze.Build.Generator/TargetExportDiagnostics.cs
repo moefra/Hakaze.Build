@@ -110,10 +110,10 @@ internal static class TargetExportDiagnostics
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
-    public static readonly DiagnosticDescriptor TargetFactoryMethodMustReturnImmutableArrayOfITarget = new(
+    public static readonly DiagnosticDescriptor TargetFactoryMethodMustReturnTaskOfImmutableArrayOfITarget = new(
         id: "HBG0014",
-        title: "Target factory methods must return ImmutableArray<ITarget>",
-        messageFormat: "Method '{0}' must return ImmutableArray<ITarget>.",
+        title: "Target factory methods must return Task<ImmutableArray<ITarget>>",
+        messageFormat: "Method '{0}' must return Task<ImmutableArray<ITarget>>.",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true);

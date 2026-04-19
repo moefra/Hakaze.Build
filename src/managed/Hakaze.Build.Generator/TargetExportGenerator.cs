@@ -12,6 +12,7 @@ namespace Hakaze.Build.Generator;
 public sealed class TargetExportGenerator : IIncrementalGenerator
 {
     private const string ExportTargetsAttributeMetadataName = "Hakaze.Build.Abstractions.Generator.ExportTargetsAttribute";
+    private const string ExportTargetsInterfaceMetadataName = "Hakaze.Build.Abstractions.Generator.IExportTargets";
     private const string PerProjectAttributeMetadataName = "Hakaze.Build.Abstractions.Generator.PerProjectAttribute";
     private const string TargetAttributeMetadataName = "Hakaze.Build.Abstractions.Generator.TargetAttribute";
     private const string TargetFactoryAttributeMetadataName = "Hakaze.Build.Abstractions.Generator.TargetFactoryAttribute";
@@ -219,6 +220,9 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             .Where(static method => method.CanGenerate)
             .Select(static method => method.Build())
             .ToImmutableArray();
+        var exportTargetsInterfaceSymbol = context.SemanticModel.Compilation.GetTypeByMetadataName(ExportTargetsInterfaceMetadataName);
+        var shouldImplementExportTargetsInterface = exportTargetsInterfaceSymbol is not null &&
+                                                    !GeneratorRoslynUtilities.ImplementsInterface(typeSymbol, exportTargetsInterfaceSymbol);
 
         return new ExportedTypeModel(
             namespaceName: typeSymbol.ContainingNamespace.IsGlobalNamespace
@@ -233,6 +237,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             methods: generatedMethods,
             targetFactoryMethods: generatedTargetFactories,
             diagnostics: diagnostics.ToImmutable(),
+            shouldImplementExportTargetsInterface: shouldImplementExportTargetsInterface,
             shouldGenerate: true);
     }
 
@@ -251,6 +256,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             methods: [],
             targetFactoryMethods: [],
             diagnostics: diagnostics,
+            shouldImplementExportTargetsInterface: false,
             shouldGenerate: false);
     }
 
@@ -450,10 +456,10 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             builder.MarkInvalid();
         }
 
-        if (!ReturnsImmutableArrayOfITarget(methodSymbol.ReturnType))
+        if (!ReturnsTaskOfImmutableArrayOfITarget(methodSymbol.ReturnType))
         {
             diagnostics.Add(Diagnostic.Create(
-                TargetExportDiagnostics.TargetFactoryMethodMustReturnImmutableArrayOfITarget,
+                TargetExportDiagnostics.TargetFactoryMethodMustReturnTaskOfImmutableArrayOfITarget,
                 methodSymbol.Locations[0],
                 methodSymbol.Name));
             builder.MarkInvalid();
@@ -527,7 +533,13 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             sourceBuilder.AppendLine();
         }
 
-        sourceBuilder.Append(model.TypeAccessibility).Append(" partial class ").Append(model.TypeName).AppendLine();
+        sourceBuilder.Append(model.TypeAccessibility).Append(" partial class ").Append(model.TypeName);
+        if (model.ShouldImplementExportTargetsInterface)
+        {
+            sourceBuilder.Append(" : global::Hakaze.Build.Abstractions.Generator.IExportTargets");
+        }
+
+        sourceBuilder.AppendLine();
         sourceBuilder.AppendLine("{");
 
         foreach (var method in model.Methods)
@@ -727,7 +739,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
         sourceBuilder.AppendLine("        }");
         sourceBuilder.AppendLine("    }");
         sourceBuilder.AppendLine();
-        sourceBuilder.AppendLine("    public static global::System.Collections.Immutable.ImmutableArray<global::Hakaze.Build.Abstractions.ITarget> GetTargets(");
+        sourceBuilder.AppendLine("    public static async global::System.Threading.Tasks.Task<global::System.Collections.Immutable.ImmutableArray<global::Hakaze.Build.Abstractions.ITarget>> GetTargetsAsync(");
         sourceBuilder.AppendLine("        global::Hakaze.Build.Abstractions.IBuilding building,");
         sourceBuilder.AppendLine("        global::System.Threading.CancellationToken cancellationToken = default)");
         sourceBuilder.AppendLine("    {");
@@ -772,7 +784,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
         sourceBuilder.AppendLine("        global::Hakaze.Build.Abstractions.IBuilding building,");
         sourceBuilder.AppendLine("        global::System.Threading.CancellationToken cancellationToken = default)");
         sourceBuilder.AppendLine("    {");
-        sourceBuilder.Append("        return global::System.Threading.Tasks.Task.FromResult(").Append(model.TypeName).AppendLine(".GetTargets(building, cancellationToken));");
+        sourceBuilder.Append("        return ").Append(model.TypeName).AppendLine(".GetTargetsAsync(building, cancellationToken);");
         sourceBuilder.AppendLine("    }");
         sourceBuilder.AppendLine("}");
 
@@ -828,9 +840,9 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
     {
         foreach (var factoryMethod in model.TargetFactoryMethods)
         {
-            builder.Append(indentation).Append("targets.AddRange(").Append(factoryMethod.MethodName).Append('(');
+            builder.Append(indentation).Append("targets.AddRange(await ").Append(factoryMethod.MethodName).Append('(');
             AppendTargetFactoryInvocationArguments(builder, factoryMethod.Parameters);
-            builder.AppendLine("));");
+            builder.AppendLine(").ConfigureAwait(false));");
         }
     }
 
@@ -1113,13 +1125,17 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
                IsType(namedType.TypeArguments[0], "Hakaze.Build.Abstractions", "ExecutionResult");
     }
 
-    private static bool ReturnsImmutableArrayOfITarget(ITypeSymbol returnType)
+    private static bool ReturnsTaskOfImmutableArrayOfITarget(ITypeSymbol returnType)
     {
         return returnType is INamedTypeSymbol namedType &&
-               namedType.Name == "ImmutableArray" &&
-               namedType.ContainingNamespace.ToDisplayString() == "System.Collections.Immutable" &&
+               namedType.Name == "Task" &&
+               namedType.ContainingNamespace.ToDisplayString() == "System.Threading.Tasks" &&
                namedType.TypeArguments.Length == 1 &&
-               IsType(namedType.TypeArguments[0], "Hakaze.Build.Abstractions", "ITarget");
+               namedType.TypeArguments[0] is INamedTypeSymbol immutableArrayType &&
+               immutableArrayType.Name == "ImmutableArray" &&
+               immutableArrayType.ContainingNamespace.ToDisplayString() == "System.Collections.Immutable" &&
+               immutableArrayType.TypeArguments.Length == 1 &&
+               IsType(immutableArrayType.TypeArguments[0], "Hakaze.Build.Abstractions", "ITarget");
     }
 
     private static bool IsTargetSourceResolverSignatureValid(IMethodSymbol methodSymbol)
@@ -1175,6 +1191,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             ImmutableArray<TargetMethodModel> methods,
             ImmutableArray<TargetFactoryMethodModel> targetFactoryMethods,
             ImmutableArray<Diagnostic> diagnostics,
+            bool shouldImplementExportTargetsInterface,
             bool shouldGenerate)
         {
             NamespaceName = namespaceName;
@@ -1187,6 +1204,7 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
             Methods = methods;
             TargetFactoryMethods = targetFactoryMethods;
             Diagnostics = diagnostics;
+            ShouldImplementExportTargetsInterface = shouldImplementExportTargetsInterface;
             ShouldGenerate = shouldGenerate;
         }
 
@@ -1209,6 +1227,8 @@ public sealed class TargetExportGenerator : IIncrementalGenerator
         public ImmutableArray<TargetFactoryMethodModel> TargetFactoryMethods { get; }
 
         public ImmutableArray<Diagnostic> Diagnostics { get; }
+
+        public bool ShouldImplementExportTargetsInterface { get; }
 
         public bool ShouldGenerate { get; }
     }

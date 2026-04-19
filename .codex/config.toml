@@ -6,8 +6,8 @@ review_model = "gpt-5.4"
 personality = "pragmatic"
 web_search = "live"
 
-approval_policy = "on-request"
 sandbox_mode = "workspace-write"
+approval_policy = "untrusted"
 
 model_reasoning_effort = "high"
 model_reasoning_summary = "concise"
@@ -16,21 +16,10 @@ project_root_markers = [".git", "wakaze.root"]
 
 project_doc_max_bytes = 65536
 
-developer_instructions = """
-Balance architecture and engineering.
-You can yield subagents.
-"""
+allow_login_shell = true
 
 [shell_environment_policy]
-inherit = "core"
-include_only = [
-    "PATH",
-    "HOME",
-    "TUNIT_DISABLE_LOGO",
-    "TUNIT_ENABLE_IDE_STREAMING",
-    "TUNIT_DISCOVERY_DIAGNOSTICS",
-    "TUNIT_EXECUTION_MODE",
-]
+inherit = "all"
 
 [sandbox_workspace_write]
 network_access = true

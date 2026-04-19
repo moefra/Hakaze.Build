@@ -11,6 +11,12 @@ internal static class GeneratorRoslynUtilities
                 SymbolDisplayFormat.FullyQualifiedFormat.MiscellaneousOptions |
                 SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier);
 
+    internal static readonly SymbolDisplayFormat ReadableTypeFormat =
+        SymbolDisplayFormat.MinimallyQualifiedFormat
+            .WithMiscellaneousOptions(
+                SymbolDisplayFormat.MinimallyQualifiedFormat.MiscellaneousOptions |
+                SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier);
+
     internal static bool HasAttribute(ImmutableArray<AttributeData> attributes, string attributeMetadataName)
     {
         return attributes.Any(attribute => IsAttribute(attribute, attributeMetadataName));
@@ -41,5 +47,10 @@ internal static class GeneratorRoslynUtilities
         return typeSymbol.ContainingNamespace.IsGlobalNamespace
             ? typeSymbol.Name
             : $"{typeSymbol.ContainingNamespace.ToDisplayString()}.{typeSymbol.Name}";
+    }
+
+    internal static bool ImplementsInterface(INamedTypeSymbol typeSymbol, INamedTypeSymbol interfaceSymbol)
+    {
+        return typeSymbol.AllInterfaces.Any(candidate => SymbolEqualityComparer.Default.Equals(candidate, interfaceSymbol));
     }
 }

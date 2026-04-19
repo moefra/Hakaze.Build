@@ -29,7 +29,7 @@ public partial class Targets
     }
 
     [TargetFactory("FactoryTarget")]
-    public static ImmutableArray<ITarget> CreateFactoryTargets(IBuilding building, CancellationToken cancellationToken)
+    public static Task<ImmutableArray<ITarget>> CreateFactoryTargetsAsync(IBuilding building, CancellationToken cancellationToken)
     {
         var targetId = new TargetId(
             null,
@@ -37,7 +37,7 @@ public partial class Targets
             FactoryTargetId,
             new TargetSource($"factory:{building.Profile.Name}:{cancellationToken.CanBeCanceled}"));
 
-        return [new FactoryProvidedTarget(targetId, $"{building.Profile.Name}:{cancellationToken.CanBeCanceled}")];
+        return Task.FromResult<ImmutableArray<ITarget>>([new FactoryProvidedTarget(targetId, $"{building.Profile.Name}:{cancellationToken.CanBeCanceled}")]);
     }
 
     [Target]
@@ -95,9 +95,15 @@ public sealed class FactoryProvidedTarget(TargetId id, string value) : ITarget
 
 public static class SampleUsage
 {
-    public static ImmutableArray<ITarget> LoadTargetsDirectly(IBuilding building)
+    public static Task<ImmutableArray<ITarget>> LoadTargetsGenericallyAsync<T>(IBuilding building, CancellationToken cancellationToken = default)
+        where T : IExportTargets
     {
-        return Targets.GetTargets(building);
+        return T.GetTargetsAsync(building, cancellationToken);
+    }
+
+    public static Task<ImmutableArray<ITarget>> LoadTargetsDirectlyAsync(IBuilding building, CancellationToken cancellationToken = default)
+    {
+        return Targets.GetTargetsAsync(building, cancellationToken);
     }
 
     public static Task<ImmutableArray<ITarget>> LoadTargetsViaFactoryAsync(IBuilding building, CancellationToken cancellationToken = default)

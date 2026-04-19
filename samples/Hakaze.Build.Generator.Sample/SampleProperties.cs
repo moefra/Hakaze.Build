@@ -11,32 +11,50 @@ namespace Hakaze.Build.Generator.Sample;
 public partial class SampleProperties
 {
     /// <summary>
-    /// map `cmake-path`
+    /// Path to the CMake executable.
     /// </summary>
     [Option]
-    public string CMakePath { get; init; }
+    public required string CMakePath { get; init; }
 
     /// <summary>
-    /// map to `cmake-ver`
+    /// Explicit version selector for CMake.
     /// </summary>
     [Option("cmake-ver")]
     public int CMakeVersion { get; init; }
 
     /// <summary>
-    /// map to `source-file`
+    /// Source files that should be processed.
     /// </summary>
     [Option]
     public ImmutableArray<string> SourceFile { get; init; }
 
     /// <summary>
-    /// map to `cmake-config`
+    /// Raw CMake configuration properties.
     /// </summary>
     [Option]
     public required ImmutableArray<Property> CMakeConfig { get; init; }
 
+    /// <summary>
+    /// Validates the bound option values.
+    /// </summary>
     [OptionValidator]
     public void Validate()
     {
         throw new NotImplementedException();
+    }
+}
+
+public static class OptionSampleUsage
+{
+    public static T LoadOptions<T>(IConfig config)
+        where T : IExportOptions<T>
+    {
+        return T.BindAsync(config);
+    }
+
+    public static ImmutableDictionary<string, string> LoadOptionDocuments<T>()
+        where T : IExportOptions<T>
+    {
+        return T.GetOptionDocuments();
     }
 }

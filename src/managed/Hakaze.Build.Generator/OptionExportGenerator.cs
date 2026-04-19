@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Text;
+using System.Xml.Linq;
 using Hakaze.Build.Utility.Naming;
 using Hakaze.Build.Utility.Text;
 using Microsoft.CodeAnalysis;
@@ -13,6 +14,7 @@ namespace Hakaze.Build.Generator;
 public sealed class OptionExportGenerator : IIncrementalGenerator
 {
     private const string ExportOptionsAttributeMetadataName = "Hakaze.Build.Abstractions.Generator.ExportOptionsAttribute";
+    private const string ExportOptionsInterfaceMetadataName = "Hakaze.Build.Abstractions.Generator.IExportOptions`1";
     private const string OptionAttributeMetadataName = "Hakaze.Build.Abstractions.Generator.OptionAttribute";
     private const string OptionValidatorAttributeMetadataName = "Hakaze.Build.Abstractions.Generator.OptionValidatorAttribute";
     private const string PropertyMetadataName = "Hakaze.Build.Abstractions.Property";
@@ -100,6 +102,14 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
             }
         }
 
+        foreach (var property in optionBuilders.Where(static property => property.CanGenerate && property.SummaryDocumentation is null))
+        {
+            diagnostics.Add(Diagnostic.Create(
+                OptionExportDiagnostics.OptionPropertyMustHaveSummaryDocumentation,
+                property.Location,
+                property.PropertyName));
+        }
+
         var validatorBuilders = new List<OptionValidatorBuilder>();
         foreach (var method in typeSymbol.GetMembers()
                      .OfType<IMethodSymbol>()
@@ -109,6 +119,19 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
         {
             validatorBuilders.Add(BuildValidator(method, diagnostics));
         }
+
+        foreach (var validator in validatorBuilders.Where(static validator => validator.CanGenerate && validator.SummaryDocumentation is null))
+        {
+            diagnostics.Add(Diagnostic.Create(
+                OptionExportDiagnostics.OptionValidatorMustHaveSummaryDocumentation,
+                validator.Location,
+                validator.MethodName));
+        }
+
+        var exportOptionsInterfaceSymbol = context.SemanticModel.Compilation.GetTypeByMetadataName(ExportOptionsInterfaceMetadataName);
+        var implementedExportOptionsInterface = exportOptionsInterfaceSymbol?.Construct(typeSymbol);
+        var shouldImplementExportOptionsInterface = implementedExportOptionsInterface is not null &&
+                                                   !GeneratorRoslynUtilities.ImplementsInterface(typeSymbol, implementedExportOptionsInterface);
 
         return new ExportedOptionsModel(
             namespaceName: typeSymbol.ContainingNamespace.IsGlobalNamespace
@@ -121,6 +144,7 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
             properties: optionBuilders.Where(static property => property.CanGenerate).Select(static property => property.Build()).ToImmutableArray(),
             validators: validatorBuilders.Where(static validator => validator.CanGenerate).Select(static validator => validator.Build()).ToImmutableArray(),
             diagnostics: diagnostics.ToImmutable(),
+            shouldImplementExportOptionsInterface: shouldImplementExportOptionsInterface,
             shouldGenerate: true);
     }
 
@@ -137,6 +161,7 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
             properties: [],
             validators: [],
             diagnostics: diagnostics,
+            shouldImplementExportOptionsInterface: false,
             shouldGenerate: false);
     }
 
@@ -178,12 +203,14 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
             propertySymbol.Name,
             optionKey,
             propertySymbol.Type.ToDisplayString(GeneratorRoslynUtilities.FullyQualifiedTypeFormat),
+            propertySymbol.Type.ToDisplayString(GeneratorRoslynUtilities.ReadableTypeFormat),
             bindingKind,
             elementBindingKind,
             elementBindingKind is null
                 ? null
                 : ((INamedTypeSymbol)propertySymbol.Type).TypeArguments[0].ToDisplayString(GeneratorRoslynUtilities.FullyQualifiedTypeFormat),
             propertySymbol.IsRequired,
+            ExtractSummaryDocumentation(propertySymbol),
             location);
     }
 
@@ -192,7 +219,7 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
         ImmutableArray<Diagnostic>.Builder diagnostics)
     {
         var location = methodSymbol.Locations.FirstOrDefault(static candidate => candidate.IsInSource) ?? Location.None;
-        var builder = new OptionValidatorBuilder(methodSymbol.Name, location);
+        var builder = new OptionValidatorBuilder(methodSymbol.Name, ExtractSummaryDocumentation(methodSymbol), location);
 
         if (methodSymbol.IsStatic ||
             methodSymbol.Parameters.Length != 0 ||
@@ -221,7 +248,15 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
             builder.AppendLine();
         }
 
-        builder.Append(model.TypeAccessibility).Append(" partial class ").Append(model.TypeName).AppendLine();
+        builder.Append(model.TypeAccessibility).Append(" partial class ").Append(model.TypeName);
+        if (model.ShouldImplementExportOptionsInterface)
+        {
+            builder.Append(" : global::Hakaze.Build.Abstractions.Generator.IExportOptions<global::")
+                .Append(model.FullyQualifiedTypeName)
+                .Append('>');
+        }
+
+        builder.AppendLine();
         builder.AppendLine("{");
         builder.Append("    public static ").Append(model.FullyQualifiedTypeName).AppendLine(" BindAsync(");
         builder.AppendLine("        global::Hakaze.Build.Abstractions.IConfig config)");
@@ -270,6 +305,48 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
 
         builder.AppendLine();
         builder.AppendLine("        return options;");
+        builder.AppendLine("    }");
+        builder.AppendLine();
+        builder.AppendLine("    public static global::System.Collections.Immutable.ImmutableDictionary<string, string> GetOptionDocuments()");
+        builder.AppendLine("    {");
+        builder.AppendLine("        var builder = global::System.Collections.Immutable.ImmutableDictionary.CreateBuilder<string, string>(global::System.StringComparer.Ordinal);");
+
+        foreach (var property in model.Properties.Where(static property => property.SummaryDocumentation is not null))
+        {
+            builder.Append("        builder.Add(\"").Append(CSharpStringLiteral.Escape(property.OptionKey)).Append("\", \"")
+                .Append(CSharpStringLiteral.Escape(property.SummaryDocumentation!)).AppendLine("\");");
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("        return builder.ToImmutable();");
+        builder.AppendLine("    }");
+        builder.AppendLine();
+        builder.AppendLine("    public static global::System.Collections.Immutable.ImmutableDictionary<string, string> GetValidatorDocuments()");
+        builder.AppendLine("    {");
+        builder.AppendLine("        var builder = global::System.Collections.Immutable.ImmutableDictionary.CreateBuilder<string, string>(global::System.StringComparer.Ordinal);");
+
+        foreach (var validator in model.Validators.Where(static validator => validator.SummaryDocumentation is not null))
+        {
+            builder.Append("        builder.Add(\"").Append(CSharpStringLiteral.Escape(validator.MethodName)).Append("\", \"")
+                .Append(CSharpStringLiteral.Escape(validator.SummaryDocumentation!)).AppendLine("\");");
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("        return builder.ToImmutable();");
+        builder.AppendLine("    }");
+        builder.AppendLine();
+        builder.AppendLine("    public static global::System.Collections.Immutable.ImmutableDictionary<string, string> GetOptionType()");
+        builder.AppendLine("    {");
+        builder.AppendLine("        var builder = global::System.Collections.Immutable.ImmutableDictionary.CreateBuilder<string, string>(global::System.StringComparer.Ordinal);");
+
+        foreach (var property in model.Properties)
+        {
+            builder.Append("        builder.Add(\"").Append(CSharpStringLiteral.Escape(property.OptionKey)).Append("\", \"")
+                .Append(CSharpStringLiteral.Escape(property.DisplayTypeName)).AppendLine("\");");
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("        return builder.ToImmutable();");
         builder.AppendLine("    }");
         builder.AppendLine();
         builder.AppendLine("    private static T ReadRequiredOption<T>(");
@@ -393,6 +470,48 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
         return builder.ToString();
     }
 
+    private static string? ExtractSummaryDocumentation(ISymbol symbol)
+    {
+        var xml = symbol.GetDocumentationCommentXml(expandIncludes: true, cancellationToken: default);
+        if (string.IsNullOrWhiteSpace(xml))
+        {
+            return null;
+        }
+
+        try
+        {
+            var document = XDocument.Parse($"<root>{xml}</root>");
+            var summary = document.Root?.Descendants("summary").FirstOrDefault();
+            if (summary is null)
+            {
+                return null;
+            }
+
+            return NormalizeDocumentationText(summary.Value);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static string? NormalizeDocumentationText(string text)
+    {
+        var lines = text
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(static line => line.Trim())
+            .Where(static line => line.Length > 0)
+            .ToImmutableArray();
+
+        if (lines.Length == 0)
+        {
+            return null;
+        }
+
+        var normalized = string.Join(" ", lines).Trim();
+        return normalized.Length == 0 ? null : normalized;
+    }
+
     private static bool TryCreateBindingKind(ITypeSymbol typeSymbol, out OptionBindingKind bindingKind, out OptionBindingKind? elementBindingKind)
     {
         elementBindingKind = null;
@@ -462,6 +581,7 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
             ImmutableArray<OptionPropertyModel> properties,
             ImmutableArray<OptionValidatorModel> validators,
             ImmutableArray<Diagnostic> diagnostics,
+            bool shouldImplementExportOptionsInterface,
             bool shouldGenerate)
         {
             NamespaceName = namespaceName;
@@ -472,6 +592,7 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
             Properties = properties;
             Validators = validators;
             Diagnostics = diagnostics;
+            ShouldImplementExportOptionsInterface = shouldImplementExportOptionsInterface;
             ShouldGenerate = shouldGenerate;
         }
 
@@ -491,6 +612,8 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
 
         public ImmutableArray<Diagnostic> Diagnostics { get; }
 
+        public bool ShouldImplementExportOptionsInterface { get; }
+
         public bool ShouldGenerate { get; }
     }
 
@@ -500,19 +623,23 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
             string propertyName,
             string optionKey,
             string typeName,
+            string displayTypeName,
             OptionBindingKind bindingKind,
             OptionBindingKind? elementBindingKind,
             string? elementTypeName,
             bool isRequired,
+            string? summaryDocumentation,
             Location location)
         {
             PropertyName = propertyName;
             OptionKey = optionKey;
             TypeName = typeName;
+            DisplayTypeName = displayTypeName;
             BindingKind = bindingKind;
             ElementBindingKind = elementBindingKind;
             ElementTypeName = elementTypeName;
             IsRequired = isRequired;
+            SummaryDocumentation = summaryDocumentation;
             Location = location;
         }
 
@@ -522,6 +649,8 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
 
         public string TypeName { get; }
 
+        public string DisplayTypeName { get; }
+
         public OptionBindingKind BindingKind { get; }
 
         public OptionBindingKind? ElementBindingKind { get; }
@@ -529,6 +658,8 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
         public string? ElementTypeName { get; }
 
         public bool IsRequired { get; }
+
+        public string? SummaryDocumentation { get; }
 
         public Location Location { get; }
 
@@ -540,10 +671,12 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
                 string.Empty,
                 optionKey,
                 string.Empty,
+                string.Empty,
                 OptionBindingKind.Property,
                 null,
                 null,
                 false,
+                null,
                 location);
             builder.MarkInvalid();
             return builder;
@@ -560,10 +693,12 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
                 PropertyName,
                 OptionKey,
                 TypeName,
+                DisplayTypeName,
                 BindingKind,
                 ElementBindingKind,
                 ElementTypeName,
-                IsRequired);
+                IsRequired,
+                SummaryDocumentation);
         }
     }
 
@@ -573,18 +708,22 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
             string propertyName,
             string optionKey,
             string typeName,
+            string displayTypeName,
             OptionBindingKind bindingKind,
             OptionBindingKind? elementBindingKind,
             string? elementTypeName,
-            bool isRequired)
+            bool isRequired,
+            string? summaryDocumentation)
         {
             PropertyName = propertyName;
             OptionKey = optionKey;
             TypeName = typeName;
+            DisplayTypeName = displayTypeName;
             BindingKind = bindingKind;
             ElementBindingKind = elementBindingKind;
             ElementTypeName = elementTypeName;
             IsRequired = isRequired;
+            SummaryDocumentation = summaryDocumentation;
         }
 
         public string PropertyName { get; }
@@ -593,6 +732,8 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
 
         public string TypeName { get; }
 
+        public string DisplayTypeName { get; }
+
         public OptionBindingKind BindingKind { get; }
 
         public OptionBindingKind? ElementBindingKind { get; }
@@ -600,6 +741,8 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
         public string? ElementTypeName { get; }
 
         public bool IsRequired { get; }
+
+        public string? SummaryDocumentation { get; }
 
         public string LocalName => char.ToLowerInvariant(PropertyName[0]) + PropertyName.Substring(1);
 
@@ -610,9 +753,11 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
             : GetReaderMethodName(BindingKind);
     }
 
-    private sealed class OptionValidatorBuilder(string methodName, Location location)
+    private sealed class OptionValidatorBuilder(string methodName, string? summaryDocumentation, Location location)
     {
         public string MethodName { get; } = methodName;
+
+        public string? SummaryDocumentation { get; } = summaryDocumentation;
 
         public Location Location { get; } = location;
 
@@ -625,13 +770,15 @@ public sealed class OptionExportGenerator : IIncrementalGenerator
 
         public OptionValidatorModel Build()
         {
-            return new OptionValidatorModel(MethodName);
+            return new OptionValidatorModel(MethodName, SummaryDocumentation);
         }
     }
 
-    private sealed class OptionValidatorModel(string methodName)
+    private sealed class OptionValidatorModel(string methodName, string? summaryDocumentation)
     {
         public string MethodName { get; } = methodName;
+
+        public string? SummaryDocumentation { get; } = summaryDocumentation;
     }
 
     private static string GetReaderMethodName(OptionBindingKind kind)
